@@ -142,6 +142,10 @@ final class AppModel: ObservableObject {
         self.settings = repository.load()
         try? repository.save(self.settings)
 
+        if !permissionService.snapshot().accessibilityTrusted {
+            _ = permissionService.requestAccessibility()
+        }
+
         workspaceObserver = NotificationCenter.default.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -242,6 +246,7 @@ final class AppModel: ObservableObject {
         case .hold: return settings.holdMouseBinding
         case .enter: return settings.enterMouseBinding
         case .capture: return MouseBinding()
+        case .unbound: return MouseBinding()
         }
     }
 
@@ -256,6 +261,8 @@ final class AppModel: ObservableObject {
             settings.enterMouseBinding.button = button
         case .capture:
             return
+        case .unbound:
+            return
         }
         syncMonitorConfiguration()
         persist()
@@ -267,6 +274,7 @@ final class AppModel: ObservableObject {
         case .hold: return settings.holdShortcut
         case .enter: return settings.enterShortcut
         case .capture: return .doubaoDefault
+        case .unbound: return .doubaoDefault
         }
     }
 
@@ -282,6 +290,8 @@ final class AppModel: ObservableObject {
         case .enter:
             settings.enterShortcut = shortcut
         case .capture:
+            return
+        case .unbound:
             return
         }
         persist()
@@ -435,6 +445,12 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(_ event: MouseButtonEvent) {
+        diagnostics.event(
+            "mouse_button_received",
+            bundleIdentifier: event.bundleIdentifier,
+            button: event.button,
+            role: event.role.logName
+        )
         if captureMode {
             guard event.kind == .down else { return }
             captureMode = false
@@ -469,6 +485,8 @@ final class AppModel: ObservableObject {
             guard event.kind == .down else { return }
             sendEnter()
         case .capture:
+            break
+        case .unbound:
             break
         }
     }
@@ -694,9 +712,15 @@ private final class Diagnostics {
 
     func event(
         _ name: String,
-        bundleIdentifier: String? = nil
+        bundleIdentifier: String? = nil,
+        button: Int64? = nil,
+        role: String? = nil
     ) {
         let bundle = bundleIdentifier ?? "unknown"
-        logger.notice("event=\(name) bundle=\(bundle)")
+        let buttonValue = button.map(String.init) ?? "none"
+        let roleValue = role ?? "none"
+        logger.notice(
+            "event=\(name, privacy: .public) bundle=\(bundle, privacy: .public) button=\(buttonValue, privacy: .public) role=\(roleValue, privacy: .public)"
+        )
     }
 }

@@ -105,7 +105,7 @@ private func testShortcutDisplayName() throws {
     )
     try expectEqual(
         AppSettings.defaultHoldShortcut.displayName,
-        "⌘⌥ + 左 Control",
+        "⌥ + 左 Control",
         "hold shortcut display name"
     )
 }
@@ -201,6 +201,46 @@ private func testIntermediateShortcutMigration() throws {
     )
 }
 
+private func testBrokenSchemaThreeHoldShortcutMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let settings = """
+    {
+      "schemaVersion": 3,
+      "toggleMouseBinding": { "button": 4 },
+      "holdMouseBinding": { "button": 0 },
+      "enterMouseBinding": { "button": 3 },
+      "toggleShortcut": {
+        "keyCode": 59,
+        "modifiers": ["control"]
+      },
+      "holdShortcut": {
+        "keyCode": 58,
+        "modifiers": ["option", "command"]
+      },
+      "enterShortcut": { "keyCode": 36, "modifiers": [] },
+      "excludedBundleIDs": [],
+      "macroRules": [],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(settings.utf8).write(to: fileURL)
+
+    let loaded = SettingsRepository(fileURL: fileURL).load()
+
+    try expectEqual(
+        loaded.holdShortcut,
+        AppSettings.defaultHoldShortcut,
+        "schema three hold shortcut repair"
+    )
+}
+
 private func testSettingsRoundTrip() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -270,6 +310,7 @@ let tests: [(String, () throws -> Void)] = [
     ("shortcut display name", testShortcutDisplayName),
     ("legacy settings migration", testLegacySettingsMigration),
     ("intermediate shortcut migration", testIntermediateShortcutMigration),
+    ("schema three shortcut migration", testBrokenSchemaThreeHoldShortcutMigration),
     ("settings round trip", testSettingsRoundTrip),
     ("corrupt settings backup", testCorruptSettingsBackup),
 ]

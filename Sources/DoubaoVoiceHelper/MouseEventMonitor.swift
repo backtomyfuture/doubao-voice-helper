@@ -10,6 +10,7 @@ enum MouseEventKind {
 
 enum MouseBindingRole: Equatable {
     case capture
+    case unbound
     case toggle
     case hold
     case enter
@@ -17,9 +18,20 @@ enum MouseBindingRole: Equatable {
     var displayName: String {
         switch self {
         case .capture: return "鼠标键"
+        case .unbound: return "未绑定"
         case .toggle: return "切换式语音"
         case .hold: return "按住式语音"
         case .enter: return "回车"
+        }
+    }
+
+    var logName: String {
+        switch self {
+        case .capture: return "capture"
+        case .unbound: return "unbound"
+        case .toggle: return "toggle"
+        case .hold: return "hold"
+        case .enter: return "enter"
         }
     }
 }
@@ -358,12 +370,28 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        guard !configuration.paused,
-              let role = monitor.role(
-                  for: button,
-                  configuration: configuration
-              )
-        else {
+        guard !configuration.paused else {
+            return Unmanaged.passUnretained(event)
+        }
+        let role = monitor.role(
+            for: button,
+            configuration: configuration
+        )
+        guard let role else {
+            let isDown = type == .otherMouseDown ||
+                type == .leftMouseDown ||
+                type == .rightMouseDown
+            if isDown {
+                monitor.callbackHandler(
+                    MouseButtonEvent(
+                        button: button,
+                        kind: .down,
+                        role: .unbound,
+                        bundleIdentifier: bundleIdentifier,
+                        processIdentifier: processIdentifier
+                    )
+                )
+            }
             return Unmanaged.passUnretained(event)
         }
 

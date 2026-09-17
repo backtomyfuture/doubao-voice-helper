@@ -133,7 +133,7 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
 
     public var schemaVersion: Int
@@ -210,11 +210,25 @@ public struct AppSettings: Codable, Equatable, Sendable {
             KeyboardShortcut.self,
             forKey: .holdShortcut
         ) ?? AppSettings.defaultHoldShortcut
+        let intermediateHoldShortcut = KeyboardShortcut(
+            keyCode: 59,
+            modifiers: [.control, .option, .command]
+        )
         if decodedSchemaVersion == 2,
-           decodedToggleShortcut == AppSettings.defaultHoldShortcut,
+           decodedToggleShortcut == intermediateHoldShortcut,
            decodedHoldShortcut == AppSettings.defaultToggleShortcut
         {
-            swap(&decodedToggleShortcut, &decodedHoldShortcut)
+            decodedToggleShortcut = AppSettings.defaultToggleShortcut
+            decodedHoldShortcut = AppSettings.defaultHoldShortcut
+        }
+        let brokenSchemaThreeHoldShortcut = KeyboardShortcut(
+            keyCode: 58,
+            modifiers: [.command, .option]
+        )
+        if decodedSchemaVersion == 3,
+           decodedHoldShortcut == brokenSchemaThreeHoldShortcut
+        {
+            decodedHoldShortcut = AppSettings.defaultHoldShortcut
         }
         toggleShortcut = decodedToggleShortcut
         holdShortcut = decodedHoldShortcut
@@ -311,7 +325,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     )
     public static let defaultHoldShortcut = KeyboardShortcut(
         keyCode: 59,
-        modifiers: [.control, .option, .command]
+        modifiers: [.control, .option]
     )
     public static let defaultEnterShortcut = KeyboardShortcut(keyCode: 36)
 
