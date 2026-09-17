@@ -178,9 +178,7 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         permissionSnapshot = permissionService.snapshot()
-        if (!permissionSnapshot.accessibilityTrusted ||
-            !permissionSnapshot.inputMonitoringAuthorized),
-           activeSession == nil
+        if !permissionSnapshot.accessibilityTrusted, activeSession == nil
         {
             status = .permission
         } else if status == .permission {
@@ -406,8 +404,7 @@ final class AppModel: ObservableObject {
 
     private func startMonitoringIfPossible() {
         guard !monitorStarted,
-              permissionSnapshot.accessibilityTrusted,
-              permissionSnapshot.inputMonitoringAuthorized
+              permissionSnapshot.accessibilityTrusted
         else {
             return
         }
@@ -415,10 +412,12 @@ final class AppModel: ObservableObject {
         do {
             try mouseMonitor.start()
             monitorStarted = true
-            status = settings.launchAtLogin ? .ready : .ready
+            diagnostics.event("mouse_event_tap_started")
+            status = .ready
         } catch {
             status = .error
-            showNotice("无法监听额外鼠标键")
+            diagnostics.event("mouse_event_tap_failed")
+            showNotice("无法监听鼠标键，请确认辅助功能授权")
         }
     }
 
@@ -683,8 +682,7 @@ final class AppModel: ObservableObject {
     }
 
     private var hasRequiredPermissions: Bool {
-        permissionSnapshot.accessibilityTrusted &&
-            permissionSnapshot.inputMonitoringAuthorized
+        permissionSnapshot.accessibilityTrusted
     }
 }
 

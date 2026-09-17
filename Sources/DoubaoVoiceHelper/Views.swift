@@ -193,17 +193,19 @@ struct SettingsView: View {
                 PermissionRow(
                     title: "辅助功能",
                     granted: model.permissionSnapshot.accessibilityTrusted,
+                    required: true,
                     action: model.requestAccessibilityPermission,
                     settingsAction: model.openAccessibilitySettings
                 )
                 PermissionRow(
-                    title: "输入监控",
+                    title: "输入监控（可选）",
                     granted: model.permissionSnapshot.inputMonitoringAuthorized,
+                    required: false,
                     action: model.requestInputMonitoringPermission,
                     settingsAction: model.openInputMonitoringSettings
                 )
                 Text(
-                    "辅助功能权限用于监听额外鼠标键、发送快捷键和安全访问支持的文本控件。"
+                    "辅助功能是必需权限，用于监听鼠标、发送快捷键和访问支持的文本控件。输入监控仅在部分 macOS 配置下需要。"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -286,6 +288,7 @@ private struct MouseMappingRow: View {
 private struct PermissionRow: View {
     let title: String
     let granted: Bool
+    let required: Bool
     let action: () -> Void
     let settingsAction: () -> Void
 
@@ -295,7 +298,11 @@ private struct PermissionRow: View {
                 .foregroundStyle(granted ? .green : .orange)
             Text(title)
             Spacer()
-            Text(granted ? "已授权" : "未授权")
+            Text(
+                granted
+                    ? "已授权"
+                    : required ? "未授权" : "可选"
+            )
                 .foregroundStyle(.secondary)
             if !granted {
                 Button("请求") {
