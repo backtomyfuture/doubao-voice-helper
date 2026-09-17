@@ -66,6 +66,16 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
 
     public func keyDown(_ shortcut: KeyboardShortcut) throws {
         let source = try eventSource()
+        if isModifierKey(shortcut.keyCode) {
+            try post(
+                source: source,
+                keyCode: shortcut.keyCode,
+                keyDown: true,
+                flags: flags(for: shortcut)
+            )
+            return
+        }
+
         var activeFlags: CGEventFlags = []
         for modifier in modifierOrder where shortcut.modifiers.contains(modifier) {
             activeFlags.formUnion(flags(for: modifier))
@@ -89,6 +99,16 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
 
     public func keyUp(_ shortcut: KeyboardShortcut) throws {
         let source = try eventSource()
+        if isModifierKey(shortcut.keyCode) {
+            try post(
+                source: source,
+                keyCode: shortcut.keyCode,
+                keyDown: false,
+                flags: []
+            )
+            return
+        }
+
         let modifiers = modifierOrder.filter {
             shortcut.modifiers.contains($0)
         }
