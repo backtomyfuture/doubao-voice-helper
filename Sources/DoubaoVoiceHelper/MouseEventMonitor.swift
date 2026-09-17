@@ -189,6 +189,10 @@ final class MouseEventMonitor {
         return replayingButton == button
     }
 
+    private func passesThroughPrimaryButton(_ button: Int64) -> Bool {
+        button == 0 || button == 1
+    }
+
     private func armPress(
         button: Int64,
         bundleIdentifier: String?,
@@ -328,6 +332,7 @@ final class MouseEventMonitor {
 
         let configuration = monitor.currentConfiguration()
         let button = event.getIntegerValueField(.mouseEventButtonNumber)
+        let passesThrough = monitor.passesThroughPrimaryButton(button)
         if monitor.isReplaying(button) {
             return Unmanaged.passUnretained(event)
         }
@@ -381,7 +386,9 @@ final class MouseEventMonitor {
                     bundleIdentifier: bundleIdentifier,
                     processIdentifier: processIdentifier
                 )
-                return nil
+                return passesThrough
+                    ? Unmanaged.passUnretained(event)
+                    : nil
             }
             if let wasLong = monitor.finishPress(button) {
                 if wasLong {
@@ -394,10 +401,12 @@ final class MouseEventMonitor {
                             processIdentifier: processIdentifier
                         )
                     )
-                } else {
+                } else if !passesThrough {
                     monitor.replayClick(button: button, at: event.location)
                 }
-                return nil
+                return passesThrough
+                    ? Unmanaged.passUnretained(event)
+                    : nil
             }
             return Unmanaged.passUnretained(event)
         }
@@ -415,6 +424,8 @@ final class MouseEventMonitor {
             )
         }
 
-        return nil
+        return passesThrough
+            ? Unmanaged.passUnretained(event)
+            : nil
     }
 }
