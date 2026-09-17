@@ -33,11 +33,45 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
     )
 
     public var displayName: String {
+        if let modifierName = modifierKeyName {
+            return modifierName
+        }
         let modifierNames = KeyboardModifier.allCases
             .filter { modifiers.contains($0) }
             .map(\.displayName)
             .joined()
-        return "\(modifierNames)keyCode \(keyCode)"
+        return "\(modifierNames)\(keyName)"
+    }
+
+    private var modifierKeyName: String? {
+        switch keyCode {
+        case 54: return "右 Command"
+        case 55: return "左 Command"
+        case 56: return "左 Shift"
+        case 58: return "左 Option"
+        case 59: return "左 Control"
+        case 60: return "右 Shift"
+        case 61: return "右 Option"
+        case 62: return "右 Control"
+        case 63: return "fn"
+        default: return nil
+        }
+    }
+
+    private var keyName: String {
+        switch keyCode {
+        case 36: return "Return"
+        case 48: return "Tab"
+        case 49: return "Space"
+        case 51: return "Delete"
+        case 53: return "Escape"
+        case 117: return "Forward Delete"
+        case 123: return "←"
+        case 124: return "→"
+        case 125: return "↓"
+        case 126: return "↑"
+        default: return "keyCode \(keyCode)"
+        }
     }
 }
 

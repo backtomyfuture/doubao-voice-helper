@@ -97,6 +97,14 @@ private func testRuleValidation() throws {
     )
 }
 
+private func testShortcutDisplayName() throws {
+    try expectEqual(
+        KeyboardShortcut.doubaoDefault.displayName,
+        "左 Control",
+        "default shortcut display name"
+    )
+}
+
 private func testSettingsRoundTrip() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -153,6 +161,7 @@ let tests: [(String, () throws -> Void)] = [
     ("unicode and multiple matches", testUnicodeAndMultipleMatches),
     ("disabled rules", testDisabledRulesAreIgnored),
     ("rule validation", testRuleValidation),
+    ("shortcut display name", testShortcutDisplayName),
     ("settings round trip", testSettingsRoundTrip),
     ("corrupt settings backup", testCorruptSettingsBackup),
 ]

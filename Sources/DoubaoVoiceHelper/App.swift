@@ -2,17 +2,27 @@ import AppKit
 import SwiftUI
 
 @main
+@MainActor
 struct DoubaoVoiceHelperApp: App {
     @StateObject private var model: AppModel
+    private let settingsWindowController: SettingsWindowController
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
-        _model = StateObject(wrappedValue: AppModel())
+        let model = AppModel()
+        let settingsWindowController = SettingsWindowController(model: model)
+        _model = StateObject(wrappedValue: model)
+        self.settingsWindowController = settingsWindowController
+        DispatchQueue.main.async {
+            settingsWindowController.show()
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView()
+            MenuBarView {
+                settingsWindowController.show()
+            }
                 .environmentObject(model)
         } label: {
             Label(
@@ -21,10 +31,5 @@ struct DoubaoVoiceHelperApp: App {
             )
         }
         .menuBarExtraStyle(.menu)
-
-        Settings {
-            SettingsView()
-                .environmentObject(model)
-        }
     }
 }

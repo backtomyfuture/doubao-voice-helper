@@ -6,6 +6,11 @@ private typealias AppKeyboardShortcut = DoubaoVoiceHelperCore.KeyboardShortcut
 
 struct MenuBarView: View {
     @EnvironmentObject private var model: AppModel
+    private let openSettings: () -> Void
+
+    init(openSettings: @escaping () -> Void) {
+        self.openSettings = openSettings
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -17,7 +22,9 @@ struct MenuBarView: View {
             Button(model.isPaused ? "恢复监听" : "暂停监听") {
                 model.setPaused(!model.isPaused)
             }
-            SettingsLink {
+            Button {
+                openSettings()
+            } label: {
                 Label("打开设置…", systemImage: "gear")
             }
             Button("检查权限") {
@@ -318,20 +325,63 @@ private final class ShortcutRecorderView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        var modifiers = Set<KeyboardModifier>()
-        let flags = event.modifierFlags
-        if flags.contains(.command) { modifiers.insert(.command) }
-        if flags.contains(.option) { modifiers.insert(.option) }
-        if flags.contains(.control) { modifiers.insert(.control) }
-        if flags.contains(.shift) { modifiers.insert(.shift) }
-        if flags.contains(.function) { modifiers.insert(.function) }
-
         shortcut = AppKeyboardShortcut(
             keyCode: event.keyCode,
-            modifiers: modifiers
+            modifiers: modifiers(from: event.modifierFlags)
         )
         onShortcut?(shortcut)
         needsDisplay = true
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard let modifier = modifier(forKeyCode: event.keyCode),
+              isActive(modifier, in: event.modifierFlags)
+        else {
+            return
+        }
+
+        shortcut = AppKeyboardShortcut(
+            keyCode: event.keyCode,
+            modifiers: [modifier]
+        )
+        onShortcut?(shortcut)
+        needsDisplay = true
+    }
+
+    private func modifiers(
+        from flags: NSEvent.ModifierFlags
+    ) -> Set<KeyboardModifier> {
+        var result = Set<KeyboardModifier>()
+        if flags.contains(.command) { result.insert(.command) }
+        if flags.contains(.option) { result.insert(.option) }
+        if flags.contains(.control) { result.insert(.control) }
+        if flags.contains(.shift) { result.insert(.shift) }
+        if flags.contains(.function) { result.insert(.function) }
+        return result
+    }
+
+    private func modifier(forKeyCode keyCode: UInt16) -> KeyboardModifier? {
+        switch keyCode {
+        case 54, 55: return .command
+        case 56, 60: return .shift
+        case 58, 61: return .option
+        case 59, 62: return .control
+        case 63: return .function
+        default: return nil
+        }
+    }
+
+    private func isActive(
+        _ modifier: KeyboardModifier,
+        in flags: NSEvent.ModifierFlags
+    ) -> Bool {
+        switch modifier {
+        case .command: return flags.contains(.command)
+        case .option: return flags.contains(.option)
+        case .control: return flags.contains(.control)
+        case .shift: return flags.contains(.shift)
+        case .function: return flags.contains(.function)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

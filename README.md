@@ -37,6 +37,8 @@ swift run DoubaoVoiceHelperCoreTests
 
 生成的 App 位于 `build/DoubaoVoiceHelper.app`。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。
 
+双击 App 会直接打开设置窗口；之后也可以从菜单栏的麦克风图标打开设置。先在设置中捕获鼠标额外按键，再录入豆包快捷键。
+
 首版的语音宏只在 AX 能够证明文本范围时写回。Terminal.app、Ghostty、Cursor/VS Code 内嵌终端的真实兼容性仍需在目标 macOS 版本上逐一验收；无法证明时只触发豆包并保留原文。
 3. 打开 `DoubaoMousePTT.app`，辅助功能允许
 4. 豆包快捷键保持左 Ctrl（点一下开、再点一下关）
