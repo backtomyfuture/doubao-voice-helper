@@ -81,6 +81,15 @@ public struct MouseBinding: Codable, Equatable, Sendable {
     public init(button: Int64 = 4) {
         self.button = button
     }
+
+    public var displayName: String {
+        switch button {
+        case 0: return "左键"
+        case 1: return "右键"
+        case 2: return "中键"
+        default: return "额外键 \(button)"
+        }
+    }
 }
 
 public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
@@ -104,6 +113,7 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 
 public struct AppSettings: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
+    public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
 
     public var schemaVersion: Int
     public var mouseBinding: MouseBinding
@@ -145,10 +155,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
             KeyboardShortcut.self,
             forKey: .doubaoShortcut
         ) ?? .doubaoDefault
-        excludedBundleIDs = try container.decodeIfPresent(
+        var decodedExcludedBundleIDs = try container.decodeIfPresent(
             [String].self,
             forKey: .excludedBundleIDs
         ) ?? AppSettings.defaultExcludedBundleIDs
+        if !decodedExcludedBundleIDs.contains(AppSettings.bundleIdentifier) {
+            decodedExcludedBundleIDs.append(AppSettings.bundleIdentifier)
+        }
+        excludedBundleIDs = decodedExcludedBundleIDs
         macroRules = try container.decodeIfPresent(
             [MacroRule].self,
             forKey: .macroRules
@@ -184,6 +198,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         "com.vivaldi.Vivaldi",
         "com.bot.pc.doubao",
         "com.work.pc.doubao",
+        AppSettings.bundleIdentifier,
     ]
 
     public static let defaultMacroRules = [

@@ -70,7 +70,7 @@ struct SettingsView: View {
 
             Section("输入") {
                 HStack {
-                    Text("额外鼠标键")
+                    Text("触发鼠标键")
                     Spacer()
                     TextField(
                         "button",
@@ -84,10 +84,15 @@ struct SettingsView: View {
                         )
                     )
                     .frame(width: 70)
+                    Text(model.settings.mouseBinding.displayName)
+                        .foregroundStyle(.secondary)
                     Button("捕获") {
                         model.beginMouseButtonCapture()
                     }
                 }
+                Text("支持左键、右键和额外鼠标键；左键需要按住约 0.25 秒。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Text("豆包快捷键")

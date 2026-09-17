@@ -50,7 +50,11 @@ public enum ShortcutEmitterError: Error {
 }
 
 public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
-    public init() {}
+    private let tapDuration: useconds_t
+
+    public init(tapDurationMilliseconds: UInt32 = 50) {
+        tapDuration = useconds_t(tapDurationMilliseconds * 1_000)
+    }
 
     public func emit(_ shortcut: KeyboardShortcut) throws {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -74,9 +78,14 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
         }
 
         down.flags = flags
-        up.flags = flags
         down.post(tap: .cghidEventTap)
+        usleep(tapDuration)
+        up.flags = isModifierKey(shortcut.keyCode) ? [] : flags
         up.post(tap: .cghidEventTap)
+    }
+
+    private func isModifierKey(_ keyCode: UInt16) -> Bool {
+        [54, 55, 56, 58, 59, 60, 61, 62, 63].contains(keyCode)
     }
 
     private func flags(for shortcut: KeyboardShortcut) -> CGEventFlags {

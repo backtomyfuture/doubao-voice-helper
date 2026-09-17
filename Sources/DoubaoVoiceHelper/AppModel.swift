@@ -114,6 +114,8 @@ final class AppModel: ObservableObject {
     private var workspaceObserver: NSObjectProtocol?
     private var monitorStarted = false
     private var captureMode = false
+    private var pendingMouseDown: DispatchWorkItem?
+    private let holdToTalkDelay: TimeInterval = 0.25
 
     init(
         repository: SettingsRepository = SettingsRepository(),
@@ -167,10 +169,13 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         permissionSnapshot = permissionService.snapshot()
-        if !permissionSnapshot.accessibilityTrusted, activeSession == nil {
+        if (!permissionSnapshot.accessibilityTrusted ||
+            !permissionSnapshot.inputMonitoringAuthorized),
+           activeSession == nil
+        {
             status = .permission
         } else if status == .permission {
-            status = settings.launchAtLogin ? .ready : .ready
+            status = .ready
         }
     }
 
@@ -183,6 +188,7 @@ final class AppModel: ObservableObject {
     func requestInputMonitoringPermission() {
         _ = permissionService.requestInputMonitoring()
         refreshPermissions()
+        startMonitoringIfPossible()
     }
 
     func openAccessibilitySettings() {
@@ -198,7 +204,7 @@ final class AppModel: ObservableObject {
             cancelActiveSession()
             status = .paused
         } else {
-            status = permissionSnapshot.accessibilityTrusted ? .ready : .permission
+            status = hasRequiredPermissions ? .ready : .permission
         }
         syncMonitorConfiguration()
         persist()
@@ -236,6 +242,11 @@ final class AppModel: ObservableObject {
     }
 
     func testShortcut() {
+        refreshPermissions()
+        guard permissionSnapshot.accessibilityTrusted else {
+            showNotice("请先授权辅助功能，系统才会接受模拟快捷键")
+            return
+        }
         do {
             try shortcutEmitter.emit(settings.doubaoShortcut)
             showNotice("已发送豆包快捷键")
@@ -245,6 +256,10 @@ final class AppModel: ObservableObject {
     }
 
     func beginMouseButtonCapture() {
+        guard monitorStarted else {
+            showNotice("请先授权辅助功能，再捕获鼠标键")
+            return
+        }
         captureMode = true
         status = .capturing
         syncMonitorConfiguration()
@@ -311,7 +326,8 @@ final class AppModel: ObservableObject {
 
     private func startMonitoringIfPossible() {
         guard !monitorStarted,
-              permissionSnapshot.accessibilityTrusted
+              permissionSnapshot.accessibilityTrusted,
+              permissionSnapshot.inputMonitoringAuthorized
         else {
             return
         }
@@ -351,10 +367,40 @@ final class AppModel: ObservableObject {
 
         switch event.kind {
         case .down:
-            beginSession(event)
+            scheduleSessionStart(event)
         case .up:
+            pendingMouseDown?.cancel()
+            pendingMouseDown = nil
+            guard activeSession != nil else {
+                return
+            }
             endSession(event)
         }
+    }
+
+    private func scheduleSessionStart(_ event: MouseButtonEvent) {
+        guard status != .paused, activeSession == nil else { return }
+        pendingMouseDown?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let currentApplication = NSWorkspace.shared.frontmostApplication
+            if let eventBundleIdentifier = event.bundleIdentifier,
+               currentApplication?.bundleIdentifier != eventBundleIdentifier
+            {
+                return
+            }
+            if event.processIdentifier != 0,
+               currentApplication?.processIdentifier != event.processIdentifier
+            {
+                return
+            }
+            self.beginSession(event)
+        }
+        pendingMouseDown = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + holdToTalkDelay,
+            execute: work
+        )
     }
 
     private func beginSession(_ event: MouseButtonEvent) {
@@ -462,7 +508,7 @@ final class AppModel: ObservableObject {
     private func finishSession(_ id: UUID, message: String?) {
         guard activeSession?.id == id else { return }
         activeSession = nil
-        status = settings.launchAtLogin ? .ready : .ready
+        status = hasRequiredPermissions ? .ready : .permission
         if let message {
             if message.hasPrefix("已应用") {
                 showOverlay(message)
@@ -482,7 +528,7 @@ final class AppModel: ObservableObject {
         }
         activeSession = nil
         if status != .paused {
-            status = permissionSnapshot.accessibilityTrusted ? .ready : .permission
+            status = hasRequiredPermissions ? .ready : .permission
         }
         overlayController.hide()
     }
@@ -519,7 +565,7 @@ final class AppModel: ObservableObject {
             self.notice = nil
             self.overlayController.hide()
             if self.status == .error {
-                self.status = self.permissionSnapshot.accessibilityTrusted
+                self.status = self.hasRequiredPermissions
                     ? .ready
                     : .permission
             }
@@ -533,6 +579,11 @@ final class AppModel: ObservableObject {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+
+    private var hasRequiredPermissions: Bool {
+        permissionSnapshot.accessibilityTrusted &&
+            permissionSnapshot.inputMonitoringAuthorized
     }
 }
 

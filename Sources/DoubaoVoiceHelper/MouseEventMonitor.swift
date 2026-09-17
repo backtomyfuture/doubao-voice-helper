@@ -60,7 +60,11 @@ final class MouseEventMonitor {
 
         let mask =
             (CGEventMask(1) << CGEventType.otherMouseDown.rawValue) |
-            (CGEventMask(1) << CGEventType.otherMouseUp.rawValue)
+            (CGEventMask(1) << CGEventType.otherMouseUp.rawValue) |
+            (CGEventMask(1) << CGEventType.leftMouseDown.rawValue) |
+            (CGEventMask(1) << CGEventType.leftMouseUp.rawValue) |
+            (CGEventMask(1) << CGEventType.rightMouseDown.rawValue) |
+            (CGEventMask(1) << CGEventType.rightMouseUp.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
@@ -130,7 +134,10 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        guard type == .otherMouseDown || type == .otherMouseUp else {
+        guard type == .otherMouseDown || type == .otherMouseUp ||
+              type == .leftMouseDown || type == .leftMouseUp ||
+              type == .rightMouseDown || type == .rightMouseUp
+        else {
             return Unmanaged.passUnretained(event)
         }
 
@@ -167,14 +174,23 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
+        let isDown = type == .otherMouseDown ||
+            type == .leftMouseDown ||
+            type == .rightMouseDown
         monitor.callbackHandler(
             MouseButtonEvent(
                 button: button,
-                kind: type == .otherMouseDown ? .down : .up,
+                kind: isDown ? .down : .up,
                 bundleIdentifier: bundleIdentifier,
                 processIdentifier: processIdentifier
             )
         )
-        return nil
+
+        // A left-button trigger must not make ordinary clicks unusable.
+        // The coordinator applies the long-press delay while the OS still
+        // receives the original left-button events.
+        return button == 0
+            ? Unmanaged.passUnretained(event)
+            : nil
     }
 }

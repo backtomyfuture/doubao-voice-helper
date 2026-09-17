@@ -116,7 +116,10 @@ private func testSettingsRoundTrip() throws {
             keyCode: 12,
             modifiers: [.command, .shift]
         ),
-        excludedBundleIDs: ["example.app"],
+        excludedBundleIDs: [
+            "example.app",
+            AppSettings.bundleIdentifier,
+        ],
         macroRules: [
             MacroRule(source: "斜杠", replacement: "/"),
         ],

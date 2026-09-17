@@ -164,10 +164,11 @@ stateDiagram-v2
 
 ### 7.1 鼠标监听
 
-- 事件 mask 只包含 `otherMouseDown`、`otherMouseUp` 和必要的拖动事件。
+- 事件 mask 包含 `leftMouseDown`/`leftMouseUp`、`rightMouseDown`/`rightMouseUp` 和 `otherMouseDown`/`otherMouseUp`。
 - 未绑定按键始终透传。
 - 绑定按键在排除应用中始终透传。
-- 绑定按键在有效目标中被消费，避免同时触发浏览器前进/后退。
+- 额外鼠标键在有效目标中被消费，避免同时触发浏览器前进/后退。
+- 左键和右键始终透传；只有按住超过短按阈值才触发听写，因此普通点击不改变原有行为。
 - 按键捕获模式显示收到的 button number，由用户确认绑定。
 - 不依赖 Logitech、Razer 或其他厂商 SDK。
 
