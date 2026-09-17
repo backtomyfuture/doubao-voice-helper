@@ -243,6 +243,7 @@ struct SettingsView: View {
 
 private struct MouseMappingRow: View {
     @EnvironmentObject private var model: AppModel
+    @State private var isRecordingShortcut = false
     let role: MouseBindingRole
 
     var body: some View {
@@ -280,8 +281,12 @@ private struct MouseMappingRow: View {
                     shortcut: Binding(
                         get: { model.shortcut(for: role) },
                         set: { model.setShortcut($0, for: role) }
-                    )
+                    ),
+                    isRecording: $isRecordingShortcut
                 )
+                Button(isRecordingShortcut ? "取消" : "设置") {
+                    isRecordingShortcut.toggle()
+                }
                 Button("测试") {
                     model.testShortcut(for: role)
                 }
@@ -323,6 +328,7 @@ private struct PermissionRow: View {
 
 private struct ShortcutRecorder: NSViewRepresentable {
     @Binding var shortcut: AppKeyboardShortcut
+    @Binding var isRecording: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -333,12 +339,18 @@ private struct ShortcutRecorder: NSViewRepresentable {
         view.shortcut = shortcut
         view.onShortcut = { value in
             context.coordinator.parent.shortcut = value
+            context.coordinator.parent.isRecording = false
         }
+        view.onCancel = {
+            context.coordinator.parent.isRecording = false
+        }
+        view.isRecording = isRecording
         return view
     }
 
     func updateNSView(_ nsView: ShortcutRecorderView, context: Context) {
         nsView.shortcut = shortcut
+        nsView.setRecording(isRecording)
         nsView.needsDisplay = true
     }
 
@@ -354,42 +366,69 @@ private struct ShortcutRecorder: NSViewRepresentable {
 private final class ShortcutRecorderView: NSView {
     var shortcut = AppKeyboardShortcut.doubaoDefault
     var onShortcut: ((AppKeyboardShortcut) -> Void)?
-    private var lastModifierCount = 0
+    var onCancel: (() -> Void)?
+    private var activeModifierShortcut: AppKeyboardShortcut?
+    var isRecording = false
 
     override var acceptsFirstResponder: Bool {
         true
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        lastModifierCount = 0
+        if isRecording {
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    func setRecording(_ recording: Bool) {
+        guard recording != isRecording else { return }
+        isRecording = recording
+        activeModifierShortcut = nil
+        if recording {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.window?.makeFirstResponder(self)
+            }
+        } else if window?.firstResponder === self {
+            window?.makeFirstResponder(window?.contentView)
+        }
         needsDisplay = true
     }
 
     override func keyDown(with event: NSEvent) {
+        guard isRecording else { return }
+        if event.keyCode == 53 {
+            isRecording = false
+            activeModifierShortcut = nil
+            onCancel?()
+            needsDisplay = true
+            return
+        }
         shortcut = AppKeyboardShortcut(
             keyCode: event.keyCode,
             modifiers: modifiers(from: event.modifierFlags)
         )
-        lastModifierCount = 0
+        activeModifierShortcut = nil
         onShortcut?(shortcut)
         needsDisplay = true
     }
 
     override func flagsChanged(with event: NSEvent) {
+        guard isRecording else { return }
         let activeModifiers = modifiers(from: event.modifierFlags)
         if activeModifiers.isEmpty {
-            lastModifierCount = 0
+            if let activeModifierShortcut {
+                shortcut = activeModifierShortcut
+                onShortcut?(shortcut)
+            }
+            activeModifierShortcut = nil
             return
         }
-        guard activeModifiers.count >= lastModifierCount else { return }
-        lastModifierCount = activeModifiers.count
 
-        shortcut = AppKeyboardShortcut(
+        activeModifierShortcut = AppKeyboardShortcut(
             keyCode: preferredModifierKeyCode(for: activeModifiers),
             modifiers: activeModifiers
         )
-        onShortcut?(shortcut)
         needsDisplay = true
     }
 
