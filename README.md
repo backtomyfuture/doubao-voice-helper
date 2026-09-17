@@ -40,7 +40,7 @@ swift run DoubaoVoiceHelperCoreTests
 双击 App 会直接打开设置窗口；之后也可以从菜单栏的麦克风图标打开设置。设置页默认提供：
 
 - 前进键（button 4）→ 左 Control，切换式语音
-- 左键（button 0）长按 → 左 Control + Option + Command，按住式语音
+- 左键（button 0）长按 → 左 Control + Option，按住式语音
 - 后退键（button 3）→ Return
 
 首次使用前先授权辅助功能和输入监控，再按需修改三组鼠标键与快捷键。

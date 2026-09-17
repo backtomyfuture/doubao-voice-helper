@@ -76,7 +76,7 @@ struct SettingsView: View {
                 MouseMappingRow(role: .enter)
                     .environmentObject(model)
                 Text(
-                    "默认：前进键切换语音；左键长按使用左 Control + Option + Command；后退键发送 Return。"
+                    "默认：前进键切换语音；左键长按使用左 Control + Option；后退键发送 Return。"
                 )
                     .font(.footnote)
                     .foregroundStyle(.secondary)

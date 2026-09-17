@@ -283,7 +283,7 @@ struct MacroRule: Codable, Identifiable, Sendable {
   "holdMouseBinding": { "button": 0 },
   "enterMouseBinding": { "button": 3 },
   "toggleShortcut": { "keyCode": 59, "modifiers": ["control"] },
-  "holdShortcut": { "keyCode": 59, "modifiers": ["control", "option", "command"] },
+  "holdShortcut": { "keyCode": 59, "modifiers": ["control", "option"] },
   "enterShortcut": { "keyCode": 36, "modifiers": [] },
   "excludedBundleIds": [],
   "macroRules": [],
