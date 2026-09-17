@@ -133,7 +133,7 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 6
+    public static let currentSchemaVersion = 7
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
 
     public var schemaVersion: Int
@@ -254,6 +254,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
             [String].self,
             forKey: .excludedBundleIDs
         ) ?? AppSettings.defaultExcludedBundleIDs
+        if decodedSchemaVersion < AppSettings.currentSchemaVersion {
+            for bundleIdentifier in AppSettings.defaultExcludedBundleIDs
+                where !decodedExcludedBundleIDs.contains(bundleIdentifier)
+            {
+                decodedExcludedBundleIDs.append(bundleIdentifier)
+            }
+        }
         if !decodedExcludedBundleIDs.contains(AppSettings.bundleIdentifier) {
             decodedExcludedBundleIDs.append(AppSettings.bundleIdentifier)
         }
@@ -318,10 +325,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let defaultExcludedBundleIDs = [
         "com.apple.finder",
         "com.apple.Safari",
+        "com.apple.Preview",
         "com.google.Chrome",
         "com.microsoft.edgemac",
         "org.mozilla.firefox",
         "company.thebrowser.Browser",
+        "com.stablyai.orca",
+        "com.citrolabs.ego",
+        "com.citrolabs.ego.lite",
         "com.brave.Browser",
         "com.operasoftware.Opera",
         "com.vivaldi.Vivaldi",
