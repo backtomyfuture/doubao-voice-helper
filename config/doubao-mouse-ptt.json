@@ -1,0 +1,23 @@
+{
+  "mouse_button": 4,
+  "key_code": 59,
+  "hold_ms": 0,
+  "tap_ms": 50,
+  "stop_delay_ms": 80,
+  "cooldown_ms": 500,
+  "debug": false,
+  "skip_bundle_ids": [
+    "com.apple.finder",
+    "com.apple.Safari",
+    "com.google.Chrome",
+    "com.citrolabs.ego",
+    "com.microsoft.edgemac",
+    "org.mozilla.firefox",
+    "company.thebrowser.Browser",
+    "com.brave.Browser",
+    "com.operasoftware.Opera",
+    "com.vivaldi.Vivaldi",
+    "com.bot.pc.doubao",
+    "com.work.pc.doubao"
+  ]
+}
