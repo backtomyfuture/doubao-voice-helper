@@ -369,6 +369,7 @@ private final class ShortcutRecorderView: NSView {
     var onShortcut: ((AppKeyboardShortcut) -> Void)?
     var onCancel: (() -> Void)?
     private var activeModifierShortcut: AppKeyboardShortcut?
+    private var capturedModifiers = Set<KeyboardModifier>()
     var isRecording = false
 
     override var acceptsFirstResponder: Bool {
@@ -385,6 +386,7 @@ private final class ShortcutRecorderView: NSView {
         guard recording != isRecording else { return }
         isRecording = recording
         activeModifierShortcut = nil
+        capturedModifiers.removeAll()
         if recording {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -401,6 +403,7 @@ private final class ShortcutRecorderView: NSView {
         if event.keyCode == 53 {
             isRecording = false
             activeModifierShortcut = nil
+            capturedModifiers.removeAll()
             onCancel?()
             needsDisplay = true
             return
@@ -410,6 +413,7 @@ private final class ShortcutRecorderView: NSView {
             modifiers: modifiers(from: event.modifierFlags)
         )
         activeModifierShortcut = nil
+        capturedModifiers.removeAll()
         onShortcut?(shortcut)
         needsDisplay = true
     }
@@ -423,12 +427,14 @@ private final class ShortcutRecorderView: NSView {
                 onShortcut?(shortcut)
             }
             activeModifierShortcut = nil
+            capturedModifiers.removeAll()
             return
         }
 
+        capturedModifiers.formUnion(activeModifiers)
         activeModifierShortcut = AppKeyboardShortcut(
-            keyCode: preferredModifierKeyCode(for: activeModifiers),
-            modifiers: activeModifiers
+            keyCode: preferredModifierKeyCode(for: capturedModifiers),
+            modifiers: capturedModifiers
         )
         needsDisplay = true
     }
