@@ -212,6 +212,10 @@ final class MouseEventMonitor {
     ) {
         lock.lock()
         var state = pressStates[button, default: PressState()]
+        if state.work != nil || state.isLong {
+            lock.unlock()
+            return
+        }
         state.generation &+= 1
         let generation = state.generation
         state.work?.cancel()

@@ -124,6 +124,8 @@ final class AppModel: ObservableObject {
     private var captureMode = false
     private var captureRole: MouseBindingRole?
     private var captureTimeout: DispatchWorkItem?
+    private var sessionCooldownUntil = Date.distantPast
+    private let sessionCooldown: TimeInterval = 0.35
 
     init(
         repository: SettingsRepository = SettingsRepository(),
@@ -512,7 +514,10 @@ final class AppModel: ObservableObject {
     }
 
     private func beginSession(_ event: MouseButtonEvent) {
-        guard status != .paused, activeSession == nil else { return }
+        guard status != .paused,
+              activeSession == nil,
+              Date() >= sessionCooldownUntil
+        else { return }
         guard event.role == .hold || event.role == .toggle else { return }
 
         let anchor = try? textAdapter.beginSession()
@@ -632,6 +637,7 @@ final class AppModel: ObservableObject {
     private func finishSession(_ id: UUID, message: String?) {
         guard activeSession?.id == id else { return }
         activeSession = nil
+        sessionCooldownUntil = Date().addingTimeInterval(sessionCooldown)
         status = hasRequiredPermissions ? .ready : .permission
         if let message {
             if message.hasPrefix("已应用") {
