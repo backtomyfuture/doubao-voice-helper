@@ -63,6 +63,8 @@ private final class ActiveSession: @unchecked Sendable {
 
     let id = UUID()
     let anchor: TextSessionAnchor?
+    let role: MouseBindingRole
+    let shortcut: KeyboardShortcut
     let bundleIdentifier: String?
     let processIdentifier: pid_t
     let cancellation = CancellationToken()
@@ -70,10 +72,14 @@ private final class ActiveSession: @unchecked Sendable {
 
     init(
         anchor: TextSessionAnchor?,
+        role: MouseBindingRole,
+        shortcut: KeyboardShortcut,
         bundleIdentifier: String?,
         processIdentifier: pid_t
     ) {
         self.anchor = anchor
+        self.role = role
+        self.shortcut = shortcut
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
     }
@@ -99,7 +105,9 @@ final class AppModel: ObservableObject {
     private let diagnostics = Diagnostics()
     private lazy var mouseMonitor = MouseEventMonitor(
         configuration: .init(
-            button: settings.mouseBinding.button,
+            toggleButton: settings.toggleMouseBinding.button,
+            holdButton: settings.holdMouseBinding.button,
+            enterButton: settings.enterMouseBinding.button,
             excludedBundleIDs: settings.excludedBundleIDs,
             paused: false,
             capturing: false
@@ -114,10 +122,8 @@ final class AppModel: ObservableObject {
     private var workspaceObserver: NSObjectProtocol?
     private var monitorStarted = false
     private var captureMode = false
-    private var ignoreNextMouseUp = false
+    private var captureRole: MouseBindingRole?
     private var captureTimeout: DispatchWorkItem?
-    private var pendingMouseDown: DispatchWorkItem?
-    private let holdToTalkDelay: TimeInterval = 0.25
 
     init(
         repository: SettingsRepository = SettingsRepository(),
@@ -134,6 +140,7 @@ final class AppModel: ObservableObject {
         self.loginItemService = loginItemService
         self.overlayController = overlayController ?? StatusOverlayController()
         self.settings = repository.load()
+        try? repository.save(self.settings)
 
         workspaceObserver = NotificationCenter.default.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -231,46 +238,94 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setMouseButton(_ button: Int64) {
+    func mouseBinding(for role: MouseBindingRole) -> MouseBinding {
+        switch role {
+        case .toggle: return settings.toggleMouseBinding
+        case .hold: return settings.holdMouseBinding
+        case .enter: return settings.enterMouseBinding
+        case .capture: return MouseBinding()
+        }
+    }
+
+    func setMouseButton(_ button: Int64, for role: MouseBindingRole) {
         guard button >= 0 else { return }
-        settings.mouseBinding.button = button
+        switch role {
+        case .toggle:
+            settings.toggleMouseBinding.button = button
+        case .hold:
+            settings.holdMouseBinding.button = button
+        case .enter:
+            settings.enterMouseBinding.button = button
+        case .capture:
+            return
+        }
         syncMonitorConfiguration()
         persist()
     }
 
-    func setShortcut(_ shortcut: KeyboardShortcut) {
-        settings.doubaoShortcut = shortcut
+    func shortcut(for role: MouseBindingRole) -> KeyboardShortcut {
+        switch role {
+        case .toggle: return settings.toggleShortcut
+        case .hold: return settings.holdShortcut
+        case .enter: return settings.enterShortcut
+        case .capture: return .doubaoDefault
+        }
+    }
+
+    func setShortcut(
+        _ shortcut: KeyboardShortcut,
+        for role: MouseBindingRole
+    ) {
+        switch role {
+        case .toggle:
+            settings.toggleShortcut = shortcut
+        case .hold:
+            settings.holdShortcut = shortcut
+        case .enter:
+            settings.enterShortcut = shortcut
+        case .capture:
+            return
+        }
         persist()
     }
 
-    func testShortcut() {
+    func testShortcut(for role: MouseBindingRole) {
         refreshPermissions()
         guard permissionSnapshot.accessibilityTrusted else {
             showNotice("请先授权辅助功能，系统才会接受模拟快捷键")
             return
         }
         do {
-            try shortcutEmitter.emit(settings.doubaoShortcut)
+            let shortcut = shortcut(for: role)
+            if role == .hold {
+                try shortcutEmitter.keyDown(shortcut)
+                usleep(350_000)
+                try shortcutEmitter.keyUp(shortcut)
+            } else {
+                try shortcutEmitter.tap(shortcut)
+            }
             showNotice("已发送豆包快捷键")
         } catch {
             showNotice("发送豆包快捷键失败")
         }
     }
 
-    func beginMouseButtonCapture() {
+    func beginMouseButtonCapture(for role: MouseBindingRole) {
         guard monitorStarted else {
             showNotice("请先授权辅助功能，再捕获鼠标键")
             return
         }
         captureMode = true
+        captureRole = role
         status = .capturing
         syncMonitorConfiguration()
-        showOverlay("请按一下要绑定的额外鼠标键")
+        showOverlay("请按一下要绑定\(role.displayName)的鼠标键")
 
         captureTimeout?.cancel()
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, self.captureMode else { return }
             self.captureMode = false
+            self.captureRole = nil
             self.status = self.hasRequiredPermissions ? .ready : .permission
             self.syncMonitorConfiguration()
             self.showNotice("鼠标键捕获超时，请重试")
@@ -333,6 +388,15 @@ final class AppModel: ObservableObject {
             showNotice("语音宏不能包含空文本或重复识别文本")
             return
         }
+        let mouseButtons = [
+            settings.toggleMouseBinding.button,
+            settings.holdMouseBinding.button,
+            settings.enterMouseBinding.button,
+        ]
+        guard Set(mouseButtons).count == mouseButtons.count else {
+            showNotice("三种鼠标功能不能绑定同一个按键")
+            return
+        }
         do {
             try repository.save(settings)
         } catch {
@@ -361,7 +425,9 @@ final class AppModel: ObservableObject {
     private func syncMonitorConfiguration() {
         mouseMonitor.update(
             configuration: .init(
-                button: settings.mouseBinding.button,
+                toggleButton: settings.toggleMouseBinding.button,
+                holdButton: settings.holdMouseBinding.button,
+                enterButton: settings.enterMouseBinding.button,
                 excludedBundleIDs: settings.excludedBundleIDs,
                 paused: status == .paused,
                 capturing: captureMode
@@ -375,77 +441,70 @@ final class AppModel: ObservableObject {
             captureMode = false
             captureTimeout?.cancel()
             captureTimeout = nil
-            ignoreNextMouseUp = true
-            settings.mouseBinding.button = event.button
+            let role = captureRole ?? .hold
+            captureRole = nil
+            setMouseButton(event.button, for: role)
             status = .ready
             syncMonitorConfiguration()
             persist()
-            showNotice("已绑定额外鼠标键 \(event.button)")
+            showNotice("已绑定\(role.displayName) \(event.button)")
             return
         }
 
-        if ignoreNextMouseUp {
-            if event.kind == .up {
-                ignoreNextMouseUp = false
-            }
-            return
-        }
-
-        switch event.kind {
-        case .down:
-            if event.button == 0, !event.isLongPress {
-                scheduleSessionStart(event)
-            } else {
+        switch event.role {
+        case .hold:
+            switch event.kind {
+            case .down:
                 beginSession(event)
+            case .up:
+                endSession(event)
             }
-        case .up:
-            pendingMouseDown?.cancel()
-            pendingMouseDown = nil
-            guard activeSession != nil else {
-                return
+        case .toggle:
+            guard event.kind == .down else { return }
+            if activeSession == nil {
+                beginSession(event)
+            } else {
+                endSession(event)
             }
-            endSession(event)
+        case .enter:
+            guard event.kind == .down else { return }
+            sendEnter()
+        case .capture:
+            break
         }
     }
 
-    private func scheduleSessionStart(_ event: MouseButtonEvent) {
+    private func sendEnter() {
         guard status != .paused, activeSession == nil else { return }
-        pendingMouseDown?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let currentApplication = NSWorkspace.shared.frontmostApplication
-            if let eventBundleIdentifier = event.bundleIdentifier,
-               currentApplication?.bundleIdentifier != eventBundleIdentifier
-            {
-                return
-            }
-            if event.processIdentifier != 0,
-               currentApplication?.processIdentifier != event.processIdentifier
-            {
-                return
-            }
-            self.beginSession(event)
+        do {
+            try shortcutEmitter.tap(settings.enterShortcut)
+            diagnostics.event("enter_emitted")
+        } catch {
+            showNotice("发送回车失败")
         }
-        pendingMouseDown = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + holdToTalkDelay,
-            execute: work
-        )
     }
 
     private func beginSession(_ event: MouseButtonEvent) {
         guard status != .paused, activeSession == nil else { return }
+        guard event.role == .hold || event.role == .toggle else { return }
 
         let anchor = try? textAdapter.beginSession()
+        let shortcut = shortcut(for: event.role)
         let session = ActiveSession(
             anchor: anchor,
+            role: event.role,
+            shortcut: shortcut,
             bundleIdentifier: event.bundleIdentifier,
             processIdentifier: event.processIdentifier
         )
         activeSession = session
 
         do {
-            try shortcutEmitter.emit(settings.doubaoShortcut)
+            if event.role == .hold {
+                try shortcutEmitter.keyDown(shortcut)
+            } else {
+                try shortcutEmitter.tap(shortcut)
+            }
             diagnostics.event(
                 "mouse_session_started",
                 bundleIdentifier: event.bundleIdentifier
@@ -470,6 +529,10 @@ final class AppModel: ObservableObject {
             return
         }
 
+        guard event.role == session.role else {
+            return
+        }
+
         if let bundleIdentifier = session.bundleIdentifier,
            bundleIdentifier != event.bundleIdentifier
         {
@@ -479,7 +542,11 @@ final class AppModel: ObservableObject {
 
         session.phase = .processing
         do {
-            try shortcutEmitter.emit(settings.doubaoShortcut)
+            if session.role == .hold {
+                try shortcutEmitter.keyUp(session.shortcut)
+            } else {
+                try shortcutEmitter.tap(session.shortcut)
+            }
             diagnostics.event(
                 "shortcut_emitted",
                 bundleIdentifier: session.bundleIdentifier
@@ -554,7 +621,11 @@ final class AppModel: ObservableObject {
         guard let session = activeSession else { return }
         session.cancellation.cancel()
         if session.phase == .listening {
-            try? shortcutEmitter.emit(settings.doubaoShortcut)
+            if session.role == .hold {
+                try? shortcutEmitter.keyUp(session.shortcut)
+            } else {
+                try? shortcutEmitter.tap(session.shortcut)
+            }
         }
         activeSession = nil
         if status != .paused {

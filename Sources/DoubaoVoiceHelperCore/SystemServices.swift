@@ -41,7 +41,9 @@ public final class PermissionService {
 }
 
 public protocol ShortcutEmitting {
-    func emit(_ shortcut: KeyboardShortcut) throws
+    func tap(_ shortcut: KeyboardShortcut) throws
+    func keyDown(_ shortcut: KeyboardShortcut) throws
+    func keyUp(_ shortcut: KeyboardShortcut) throws
 }
 
 public enum ShortcutEmitterError: Error {
@@ -56,32 +58,98 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
         tapDuration = useconds_t(tapDurationMilliseconds * 1_000)
     }
 
-    public func emit(_ shortcut: KeyboardShortcut) throws {
+    public func tap(_ shortcut: KeyboardShortcut) throws {
+        try keyDown(shortcut)
+        usleep(tapDuration)
+        try keyUp(shortcut)
+    }
+
+    public func keyDown(_ shortcut: KeyboardShortcut) throws {
+        let source = try eventSource()
+        var activeFlags: CGEventFlags = []
+        for modifier in modifierOrder where shortcut.modifiers.contains(modifier) {
+            activeFlags.formUnion(flags(for: modifier))
+            try post(
+                source: source,
+                keyCode: keyCode(for: modifier),
+                keyDown: true,
+                flags: activeFlags
+            )
+        }
+
+        if !isModifierKey(shortcut.keyCode) {
+            try post(
+                source: source,
+                keyCode: shortcut.keyCode,
+                keyDown: true,
+                flags: flags(for: shortcut)
+            )
+        }
+    }
+
+    public func keyUp(_ shortcut: KeyboardShortcut) throws {
+        let source = try eventSource()
+        let modifiers = modifierOrder.filter {
+            shortcut.modifiers.contains($0)
+        }
+
+        if !isModifierKey(shortcut.keyCode) {
+            try post(
+                source: source,
+                keyCode: shortcut.keyCode,
+                keyDown: false,
+                flags: flags(for: shortcut)
+            )
+        }
+
+        var activeFlags = flags(for: shortcut)
+        for modifier in modifiers.reversed() {
+            activeFlags.subtract(flags(for: modifier))
+            try post(
+                source: source,
+                keyCode: keyCode(for: modifier),
+                keyDown: false,
+                flags: activeFlags
+            )
+        }
+    }
+
+    private var modifierOrder: [KeyboardModifier] {
+        [.command, .option, .control, .shift, .function]
+    }
+
+    private func eventSource() throws -> CGEventSource {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ShortcutEmitterError.eventSourceUnavailable
         }
+        return source
+    }
 
-        let flags = flags(for: shortcut)
-        guard
-            let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: CGKeyCode(shortcut.keyCode),
-                keyDown: true
-            ),
-            let up = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: CGKeyCode(shortcut.keyCode),
-                keyDown: false
-            )
-        else {
+    private func post(
+        source: CGEventSource,
+        keyCode: UInt16,
+        keyDown: Bool,
+        flags: CGEventFlags
+    ) throws {
+        guard let event = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: CGKeyCode(keyCode),
+            keyDown: keyDown
+        ) else {
             throw ShortcutEmitterError.keyEventCreationFailed
         }
+        event.flags = flags
+        event.post(tap: .cghidEventTap)
+    }
 
-        down.flags = flags
-        down.post(tap: .cghidEventTap)
-        usleep(tapDuration)
-        up.flags = isModifierKey(shortcut.keyCode) ? [] : flags
-        up.post(tap: .cghidEventTap)
+    private func keyCode(for modifier: KeyboardModifier) -> UInt16 {
+        switch modifier {
+        case .command: return 55
+        case .option: return 58
+        case .control: return 59
+        case .shift: return 56
+        case .function: return 63
+        }
     }
 
     private func isModifierKey(_ keyCode: UInt16) -> Bool {
@@ -89,23 +157,21 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
     }
 
     private func flags(for shortcut: KeyboardShortcut) -> CGEventFlags {
-        var flags: CGEventFlags = []
-        if shortcut.modifiers.contains(.command) {
-            flags.insert(.maskCommand)
+        var eventFlags: CGEventFlags = []
+        for modifier in modifierOrder where shortcut.modifiers.contains(modifier) {
+            eventFlags.formUnion(flags(for: modifier))
         }
-        if shortcut.modifiers.contains(.option) {
-            flags.insert(.maskAlternate)
+        return eventFlags
+    }
+
+    private func flags(for modifier: KeyboardModifier) -> CGEventFlags {
+        switch modifier {
+        case .command: return .maskCommand
+        case .option: return .maskAlternate
+        case .control: return .maskControl
+        case .shift: return .maskShift
+        case .function: return .maskSecondaryFn
         }
-        if shortcut.modifiers.contains(.control) {
-            flags.insert(.maskControl)
-        }
-        if shortcut.modifiers.contains(.shift) {
-            flags.insert(.maskShift)
-        }
-        if shortcut.modifiers.contains(.function) {
-            flags.insert(.maskSecondaryFn)
-        }
-        return flags
     }
 }
 

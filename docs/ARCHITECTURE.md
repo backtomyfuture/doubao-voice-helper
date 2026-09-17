@@ -52,8 +52,8 @@ MVP 采用非沙盒直接分发。公开分发时增加 Developer ID、Hardened 
 
 ```mermaid
 flowchart LR
-    Mouse[标准额外鼠标键] --> App[豆包语音助手]
-    App -->|模拟用户配置的快捷键| Doubao[豆包输入法]
+    Mouse[左键/前进键/后退键] --> App[豆包语音助手]
+    App -->|模拟三组用户配置的快捷键| Doubao[豆包输入法]
     Doubao -->|写入识别文本| Target[当前目标应用]
     App -->|AX 读取与精确写回| Target
     App --> Store[本地设置与规则]
@@ -109,7 +109,9 @@ protocol MouseEventMonitoring {
 }
 
 protocol ShortcutEmitting {
-    func emit(_ shortcut: KeyboardShortcut) throws
+    func tap(_ shortcut: KeyboardShortcut) throws
+    func keyDown(_ shortcut: KeyboardShortcut) throws
+    func keyUp(_ shortcut: KeyboardShortcut) throws
 }
 
 protocol TextTargetAdapter {
@@ -276,9 +278,13 @@ struct MacroRule: Codable, Identifiable, Sendable {
 
 ```json
 {
-  "schemaVersion": 1,
-  "mouseBinding": { "button": 4 },
-  "doubaoShortcut": { "keyCode": 59, "modifiers": ["control"] },
+  "schemaVersion": 2,
+  "toggleMouseBinding": { "button": 4 },
+  "holdMouseBinding": { "button": 0 },
+  "enterMouseBinding": { "button": 3 },
+  "toggleShortcut": { "keyCode": 59, "modifiers": ["control"] },
+  "holdShortcut": { "keyCode": 59, "modifiers": ["control", "option", "command"] },
+  "enterShortcut": { "keyCode": 36, "modifiers": [] },
   "excludedBundleIds": [],
   "macroRules": [],
   "launchAtLogin": true,
@@ -307,7 +313,7 @@ struct MacroRule: Codable, Identifiable, Sendable {
 ### 设置窗口
 
 - 常规：登录启动、浮层开关。
-- 输入：鼠标按键捕获、豆包快捷键录入和测试。
+- 输入：切换式、按住式、回车三组鼠标按键捕获、快捷键录入和测试。
 - 应用：排除列表、当前前台应用快速添加。
 - 语音宏：增删改、启停、排序和预览测试。
 - 诊断：权限状态、版本、兼容状态、导出不含内容的诊断信息。
@@ -431,7 +437,7 @@ MVP 不以 Mac App Store 为目标。
 ## 17. 建议实施顺序
 
 1. 建立 Xcode App 壳、菜单栏和设置持久化。
-2. 移植鼠标监听和可配置快捷键，先保持无文本处理。
+2. 移植三组鼠标监听和可配置快捷键，先保持无文本处理。
 3. 实现会话状态机、权限服务和安全取消。
 4. 开发 AX 探针，完成三个验收应用的前置验证。
 5. 固化 `TextTargetAdapter` 接口，实现通过验证的适配器。
@@ -449,11 +455,11 @@ MVP 不以 Mac App Store 为目标。
 | 与豆包关系 | 非侵入式增强层 |
 | UI 形态 | 菜单栏 + 设置窗口 |
 | 平台 | macOS 14+，Apple Silicon |
-| 鼠标 | 标准额外鼠标键 |
-| 交互 | 按住说话，松开结束 |
+| 鼠标 | 前进键切换、左键长按、后退键回车 |
+| 交互 | 切换式、按住式和回车三种独立动作 |
 | 文本规则 | 本次听写内的确定性字面替换 |
 | 安全策略 | 无法证明范围则保留原文 |
 | 数据 | 完全本地、可迁移 JSON |
 | 登录启动 | `SMAppService`，首启默认开启 |
 | 分发 | 首版未公证测试包，手工更新 |
-| 自动回车 | 第二阶段，按应用开关且默认关闭 |
+| 回车 | 默认由后退键发送 Return，可单独配置 |

@@ -8,25 +8,41 @@ enum MouseEventKind {
     case up
 }
 
+enum MouseBindingRole: Equatable {
+    case capture
+    case toggle
+    case hold
+    case enter
+
+    var displayName: String {
+        switch self {
+        case .capture: return "鼠标键"
+        case .toggle: return "切换式语音"
+        case .hold: return "按住式语音"
+        case .enter: return "回车"
+        }
+    }
+}
+
 struct MouseButtonEvent {
     let button: Int64
     let kind: MouseEventKind
+    let role: MouseBindingRole
     let bundleIdentifier: String?
     let processIdentifier: pid_t
-    let isLongPress: Bool
 
     init(
         button: Int64,
         kind: MouseEventKind,
+        role: MouseBindingRole,
         bundleIdentifier: String?,
-        processIdentifier: pid_t,
-        isLongPress: Bool = false
+        processIdentifier: pid_t
     ) {
         self.button = button
         self.kind = kind
+        self.role = role
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
-        self.isLongPress = isLongPress
     }
 }
 
@@ -37,7 +53,9 @@ enum MouseEventMonitorError: Error {
 
 final class MouseEventMonitor {
     struct Configuration {
-        var button: Int64
+        var toggleButton: Int64
+        var holdButton: Int64
+        var enterButton: Int64
         var excludedBundleIDs: [String]
         var paused: Bool
         var capturing: Bool
@@ -149,6 +167,22 @@ final class MouseEventMonitor {
         return configuration
     }
 
+    private func role(
+        for button: Int64,
+        configuration: Configuration
+    ) -> MouseBindingRole? {
+        if button == configuration.holdButton {
+            return .hold
+        }
+        if button == configuration.toggleButton {
+            return .toggle
+        }
+        if button == configuration.enterButton {
+            return .enter
+        }
+        return nil
+    }
+
     private func isReplaying(_ button: Int64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -183,9 +217,9 @@ final class MouseEventMonitor {
                 MouseButtonEvent(
                     button: button,
                     kind: .down,
+                    role: .hold,
                     bundleIdentifier: bundleIdentifier,
-                    processIdentifier: processIdentifier,
-                    isLongPress: true
+                    processIdentifier: processIdentifier
                 )
             )
         }
@@ -226,13 +260,23 @@ final class MouseEventMonitor {
         }
 
         let source = CGEventSource(stateID: .hidSystemState)
-        let mouseType: CGEventType = button == 0
-            ? .leftMouseDown
-            : .rightMouseDown
-        let mouseUpType: CGEventType = button == 0
-            ? .leftMouseUp
-            : .rightMouseUp
-        let mouseButton: CGMouseButton = button == 0 ? .left : .right
+        let mouseType: CGEventType
+        let mouseUpType: CGEventType
+        let mouseButton: CGMouseButton
+        switch button {
+        case 0:
+            mouseType = .leftMouseDown
+            mouseUpType = .leftMouseUp
+            mouseButton = .left
+        case 1:
+            mouseType = .rightMouseDown
+            mouseUpType = .rightMouseUp
+            mouseButton = .right
+        default:
+            mouseType = .otherMouseDown
+            mouseUpType = .otherMouseUp
+            mouseButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
+        }
         let down = CGEvent(
             mouseEventSource: source,
             mouseType: mouseType,
@@ -245,6 +289,16 @@ final class MouseEventMonitor {
             mouseCursorPosition: location,
             mouseButton: mouseButton
         )
+        if button >= 2 {
+            down?.setIntegerValueField(
+                .mouseEventButtonNumber,
+                value: button
+            )
+            up?.setIntegerValueField(
+                .mouseEventButtonNumber,
+                value: button
+            )
+        }
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
@@ -290,6 +344,7 @@ final class MouseEventMonitor {
                     MouseButtonEvent(
                         button: button,
                         kind: .down,
+                        role: .capture,
                         bundleIdentifier: bundleIdentifier,
                         processIdentifier: processIdentifier
                     )
@@ -298,7 +353,12 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        guard !configuration.paused, button == configuration.button else {
+        guard !configuration.paused,
+              let role = monitor.role(
+                  for: button,
+                  configuration: configuration
+              )
+        else {
             return Unmanaged.passUnretained(event)
         }
 
@@ -314,7 +374,7 @@ final class MouseEventMonitor {
         let isDown = type == .otherMouseDown ||
             type == .leftMouseDown ||
             type == .rightMouseDown
-        if button == 0 || button == 1 {
+        if role == .hold {
             if isDown {
                 monitor.armPress(
                     button: button,
@@ -329,9 +389,9 @@ final class MouseEventMonitor {
                         MouseButtonEvent(
                             button: button,
                             kind: .up,
+                            role: .hold,
                             bundleIdentifier: bundleIdentifier,
-                            processIdentifier: processIdentifier,
-                            isLongPress: true
+                            processIdentifier: processIdentifier
                         )
                     )
                 } else {
@@ -342,14 +402,18 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        monitor.callbackHandler(
-            MouseButtonEvent(
-                button: button,
-                kind: isDown ? .down : .up,
-                bundleIdentifier: bundleIdentifier,
-                processIdentifier: processIdentifier
+        if isDown {
+            let eventRole: MouseBindingRole = role
+            monitor.callbackHandler(
+                MouseButtonEvent(
+                    button: button,
+                    kind: .down,
+                    role: eventRole,
+                    bundleIdentifier: bundleIdentifier,
+                    processIdentifier: processIdentifier
+                )
             )
-        )
+        }
 
         return nil
     }

@@ -69,43 +69,17 @@ struct SettingsView: View {
             }
 
             Section("输入") {
-                HStack {
-                    Text("触发鼠标键")
-                    Spacer()
-                    TextField(
-                        "button",
-                        text: Binding(
-                            get: { String(model.settings.mouseBinding.button) },
-                            set: {
-                                if let value = Int64($0) {
-                                    model.setMouseButton(value)
-                                }
-                            }
-                        )
-                    )
-                    .frame(width: 70)
-                    Text(model.settings.mouseBinding.displayName)
-                        .foregroundStyle(.secondary)
-                    Button("捕获") {
-                        model.beginMouseButtonCapture()
-                    }
-                }
-                Text("支持左键、右键和额外鼠标键；左键需要按住约 0.25 秒。")
+                MouseMappingRow(role: .toggle)
+                    .environmentObject(model)
+                MouseMappingRow(role: .hold)
+                    .environmentObject(model)
+                MouseMappingRow(role: .enter)
+                    .environmentObject(model)
+                Text(
+                    "默认：前进键切换语音；左键长按使用左 Control + Option + Command；后退键发送 Return。"
+                )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-
-                HStack {
-                    Text("豆包快捷键")
-                    ShortcutRecorder(
-                        shortcut: Binding(
-                            get: { model.settings.doubaoShortcut },
-                            set: { model.setShortcut($0) }
-                        )
-                    )
-                    Button("测试") {
-                        model.testShortcut()
-                    }
-                }
             }
 
             Section("语音宏") {
@@ -260,6 +234,55 @@ struct SettingsView: View {
     }
 }
 
+private struct MouseMappingRow: View {
+    @EnvironmentObject private var model: AppModel
+    let role: MouseBindingRole
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(role.displayName)
+                    .font(.headline)
+                Spacer()
+                TextField(
+                    "button",
+                    text: Binding(
+                        get: {
+                            String(model.mouseBinding(for: role).button)
+                        },
+                        set: {
+                            if let value = Int64($0) {
+                                model.setMouseButton(value, for: role)
+                            }
+                        }
+                    )
+                )
+                .frame(width: 55)
+                Text(model.mouseBinding(for: role).displayName)
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 70, alignment: .leading)
+                Button("捕获") {
+                    model.beginMouseButtonCapture(for: role)
+                }
+            }
+
+            HStack {
+                Text("豆包快捷键")
+                    .foregroundStyle(.secondary)
+                ShortcutRecorder(
+                    shortcut: Binding(
+                        get: { model.shortcut(for: role) },
+                        set: { model.setShortcut($0, for: role) }
+                    )
+                )
+                Button("测试") {
+                    model.testShortcut(for: role)
+                }
+            }
+        }
+    }
+}
+
 private struct PermissionRow: View {
     let title: String
     let granted: Bool
@@ -319,6 +342,7 @@ private struct ShortcutRecorder: NSViewRepresentable {
 private final class ShortcutRecorderView: NSView {
     var shortcut = AppKeyboardShortcut.doubaoDefault
     var onShortcut: ((AppKeyboardShortcut) -> Void)?
+    private var lastModifierCount = 0
 
     override var acceptsFirstResponder: Bool {
         true
@@ -326,6 +350,7 @@ private final class ShortcutRecorderView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        lastModifierCount = 0
         needsDisplay = true
     }
 
@@ -334,20 +359,23 @@ private final class ShortcutRecorderView: NSView {
             keyCode: event.keyCode,
             modifiers: modifiers(from: event.modifierFlags)
         )
+        lastModifierCount = 0
         onShortcut?(shortcut)
         needsDisplay = true
     }
 
     override func flagsChanged(with event: NSEvent) {
-        guard let modifier = modifier(forKeyCode: event.keyCode),
-              isActive(modifier, in: event.modifierFlags)
-        else {
+        let activeModifiers = modifiers(from: event.modifierFlags)
+        if activeModifiers.isEmpty {
+            lastModifierCount = 0
             return
         }
+        guard activeModifiers.count >= lastModifierCount else { return }
+        lastModifierCount = activeModifiers.count
 
         shortcut = AppKeyboardShortcut(
-            keyCode: event.keyCode,
-            modifiers: [modifier]
+            keyCode: preferredModifierKeyCode(for: activeModifiers),
+            modifiers: activeModifiers
         )
         onShortcut?(shortcut)
         needsDisplay = true
@@ -365,28 +393,14 @@ private final class ShortcutRecorderView: NSView {
         return result
     }
 
-    private func modifier(forKeyCode keyCode: UInt16) -> KeyboardModifier? {
-        switch keyCode {
-        case 54, 55: return .command
-        case 56, 60: return .shift
-        case 58, 61: return .option
-        case 59, 62: return .control
-        case 63: return .function
-        default: return nil
-        }
-    }
-
-    private func isActive(
-        _ modifier: KeyboardModifier,
-        in flags: NSEvent.ModifierFlags
-    ) -> Bool {
-        switch modifier {
-        case .command: return flags.contains(.command)
-        case .option: return flags.contains(.option)
-        case .control: return flags.contains(.control)
-        case .shift: return flags.contains(.shift)
-        case .function: return flags.contains(.function)
-        }
+    private func preferredModifierKeyCode(
+        for modifiers: Set<KeyboardModifier>
+    ) -> UInt16 {
+        if modifiers.contains(.control) { return 59 }
+        if modifiers.contains(.option) { return 58 }
+        if modifiers.contains(.command) { return 55 }
+        if modifiers.contains(.shift) { return 56 }
+        return 63
     }
 
     override func draw(_ dirtyRect: NSRect) {

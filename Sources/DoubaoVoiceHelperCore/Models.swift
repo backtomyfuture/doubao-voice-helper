@@ -33,13 +33,23 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
     )
 
     public var displayName: String {
-        if let modifierName = modifierKeyName {
-            return modifierName
-        }
         let modifierNames = KeyboardModifier.allCases
             .filter { modifiers.contains($0) }
             .map(\.displayName)
             .joined()
+        if let modifierName = modifierKeyName {
+            let primaryModifier = modifierForKeyCode
+            let extraModifiers = KeyboardModifier.allCases
+                .filter {
+                    modifiers.contains($0) && $0 != primaryModifier
+                }
+                .map(\.displayName)
+                .joined()
+            if extraModifiers.isEmpty {
+                return modifierName
+            }
+            return "\(extraModifiers) + \(modifierName)"
+        }
         return "\(modifierNames)\(keyName)"
     }
 
@@ -54,6 +64,17 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
         case 61: return "右 Option"
         case 62: return "右 Control"
         case 63: return "fn"
+        default: return nil
+        }
+    }
+
+    private var modifierForKeyCode: KeyboardModifier? {
+        switch keyCode {
+        case 54, 55: return .command
+        case 56, 60: return .shift
+        case 58, 61: return .option
+        case 59, 62: return .control
+        case 63: return .function
         default: return nil
         }
     }
@@ -112,12 +133,16 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 3
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
 
     public var schemaVersion: Int
-    public var mouseBinding: MouseBinding
-    public var doubaoShortcut: KeyboardShortcut
+    public var toggleMouseBinding: MouseBinding
+    public var holdMouseBinding: MouseBinding
+    public var enterMouseBinding: MouseBinding
+    public var toggleShortcut: KeyboardShortcut
+    public var holdShortcut: KeyboardShortcut
+    public var enterShortcut: KeyboardShortcut
     public var excludedBundleIDs: [String]
     public var macroRules: [MacroRule]
     public var launchAtLogin: Bool
@@ -125,16 +150,24 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(
         schemaVersion: Int = AppSettings.currentSchemaVersion,
-        mouseBinding: MouseBinding = MouseBinding(),
-        doubaoShortcut: KeyboardShortcut = .doubaoDefault,
+        toggleMouseBinding: MouseBinding = AppSettings.defaultToggleMouseBinding,
+        holdMouseBinding: MouseBinding = AppSettings.defaultHoldMouseBinding,
+        enterMouseBinding: MouseBinding = AppSettings.defaultEnterMouseBinding,
+        toggleShortcut: KeyboardShortcut = AppSettings.defaultToggleShortcut,
+        holdShortcut: KeyboardShortcut = AppSettings.defaultHoldShortcut,
+        enterShortcut: KeyboardShortcut = AppSettings.defaultEnterShortcut,
         excludedBundleIDs: [String] = AppSettings.defaultExcludedBundleIDs,
         macroRules: [MacroRule] = AppSettings.defaultMacroRules,
         launchAtLogin: Bool = true,
         overlayEnabled: Bool = true
     ) {
         self.schemaVersion = schemaVersion
-        self.mouseBinding = mouseBinding
-        self.doubaoShortcut = doubaoShortcut
+        self.toggleMouseBinding = toggleMouseBinding
+        self.holdMouseBinding = holdMouseBinding
+        self.enterMouseBinding = enterMouseBinding
+        self.toggleShortcut = toggleShortcut
+        self.holdShortcut = holdShortcut
+        self.enterShortcut = enterShortcut
         self.excludedBundleIDs = excludedBundleIDs
         self.macroRules = macroRules
         self.launchAtLogin = launchAtLogin
@@ -143,18 +176,52 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(
+        let decodedSchemaVersion = try container.decodeIfPresent(
             Int.self,
             forKey: .schemaVersion
         ) ?? AppSettings.currentSchemaVersion
-        mouseBinding = try container.decodeIfPresent(
+        schemaVersion = max(decodedSchemaVersion, AppSettings.currentSchemaVersion)
+
+        let legacyMouseBinding = try container.decodeIfPresent(
             MouseBinding.self,
-            forKey: .mouseBinding
-        ) ?? MouseBinding()
-        doubaoShortcut = try container.decodeIfPresent(
+            forKey: .legacyMouseBinding
+        )
+        let legacyShortcut = try container.decodeIfPresent(
             KeyboardShortcut.self,
-            forKey: .doubaoShortcut
-        ) ?? .doubaoDefault
+            forKey: .legacyDoubaoShortcut
+        )
+        toggleMouseBinding = try container.decodeIfPresent(
+            MouseBinding.self,
+            forKey: .toggleMouseBinding
+        ) ?? AppSettings.defaultToggleMouseBinding
+        holdMouseBinding = try container.decodeIfPresent(
+            MouseBinding.self,
+            forKey: .holdMouseBinding
+        ) ?? legacyMouseBinding ?? AppSettings.defaultHoldMouseBinding
+        enterMouseBinding = try container.decodeIfPresent(
+            MouseBinding.self,
+            forKey: .enterMouseBinding
+        ) ?? AppSettings.defaultEnterMouseBinding
+        var decodedToggleShortcut = try container.decodeIfPresent(
+            KeyboardShortcut.self,
+            forKey: .toggleShortcut
+        ) ?? legacyShortcut ?? AppSettings.defaultToggleShortcut
+        var decodedHoldShortcut = try container.decodeIfPresent(
+            KeyboardShortcut.self,
+            forKey: .holdShortcut
+        ) ?? AppSettings.defaultHoldShortcut
+        if decodedSchemaVersion == 2,
+           decodedToggleShortcut == AppSettings.defaultHoldShortcut,
+           decodedHoldShortcut == AppSettings.defaultToggleShortcut
+        {
+            swap(&decodedToggleShortcut, &decodedHoldShortcut)
+        }
+        toggleShortcut = decodedToggleShortcut
+        holdShortcut = decodedHoldShortcut
+        enterShortcut = try container.decodeIfPresent(
+            KeyboardShortcut.self,
+            forKey: .enterShortcut
+        ) ?? AppSettings.defaultEnterShortcut
         var decodedExcludedBundleIDs = try container.decodeIfPresent(
             [String].self,
             forKey: .excludedBundleIDs
@@ -175,6 +242,40 @@ public struct AppSettings: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .overlayEnabled
         ) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(
+            toggleMouseBinding,
+            forKey: .toggleMouseBinding
+        )
+        try container.encode(
+            holdMouseBinding,
+            forKey: .holdMouseBinding
+        )
+        try container.encode(
+            enterMouseBinding,
+            forKey: .enterMouseBinding
+        )
+        try container.encode(toggleShortcut, forKey: .toggleShortcut)
+        try container.encode(holdShortcut, forKey: .holdShortcut)
+        try container.encode(enterShortcut, forKey: .enterShortcut)
+        try container.encode(excludedBundleIDs, forKey: .excludedBundleIDs)
+        try container.encode(macroRules, forKey: .macroRules)
+        try container.encode(launchAtLogin, forKey: .launchAtLogin)
+        try container.encode(overlayEnabled, forKey: .overlayEnabled)
+    }
+
+    public var mouseBinding: MouseBinding {
+        get { holdMouseBinding }
+        set { holdMouseBinding = newValue }
+    }
+
+    public var doubaoShortcut: KeyboardShortcut {
+        get { holdShortcut }
+        set { holdShortcut = newValue }
     }
 
     public func isExcluded(bundleIdentifier: String?) -> Bool {
@@ -201,9 +302,38 @@ public struct AppSettings: Codable, Equatable, Sendable {
         AppSettings.bundleIdentifier,
     ]
 
+    public static let defaultToggleMouseBinding = MouseBinding(button: 4)
+    public static let defaultHoldMouseBinding = MouseBinding(button: 0)
+    public static let defaultEnterMouseBinding = MouseBinding(button: 3)
+    public static let defaultToggleShortcut = KeyboardShortcut(
+        keyCode: 59,
+        modifiers: [.control]
+    )
+    public static let defaultHoldShortcut = KeyboardShortcut(
+        keyCode: 59,
+        modifiers: [.control, .option, .command]
+    )
+    public static let defaultEnterShortcut = KeyboardShortcut(keyCode: 36)
+
     public static let defaultMacroRules = [
         MacroRule(source: "斜杠批准", replacement: "/approve"),
         MacroRule(source: "斜杠任务", replacement: "/missions"),
         MacroRule(source: "斜杠", replacement: "/"),
     ]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case toggleMouseBinding
+        case holdMouseBinding
+        case enterMouseBinding
+        case toggleShortcut
+        case holdShortcut
+        case enterShortcut
+        case legacyMouseBinding = "mouseBinding"
+        case legacyDoubaoShortcut = "doubaoShortcut"
+        case excludedBundleIDs
+        case macroRules
+        case launchAtLogin
+        case overlayEnabled
+    }
 }

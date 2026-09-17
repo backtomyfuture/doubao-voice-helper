@@ -103,6 +103,102 @@ private func testShortcutDisplayName() throws {
         "左 Control",
         "default shortcut display name"
     )
+    try expectEqual(
+        AppSettings.defaultHoldShortcut.displayName,
+        "⌘⌥ + 左 Control",
+        "hold shortcut display name"
+    )
+}
+
+private func testLegacySettingsMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let legacy = """
+    {
+      "schemaVersion": 1,
+      "mouseBinding": { "button": 0 },
+      "doubaoShortcut": {
+        "keyCode": 59,
+        "modifiers": ["control"]
+      },
+      "excludedBundleIDs": [],
+      "macroRules": [],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(legacy.utf8).write(to: fileURL)
+
+    let settings = SettingsRepository(fileURL: fileURL).load()
+
+    try expectEqual(settings.toggleMouseBinding.button, 4, "legacy toggle button")
+    try expectEqual(settings.holdMouseBinding.button, 0, "legacy hold button")
+    try expectEqual(settings.enterMouseBinding.button, 3, "legacy enter button")
+    try expectEqual(
+        settings.toggleShortcut,
+        KeyboardShortcut(keyCode: 59, modifiers: [.control]),
+        "legacy toggle shortcut"
+    )
+    try expectEqual(
+        settings.holdShortcut,
+        AppSettings.defaultHoldShortcut,
+        "new hold shortcut default"
+    )
+    try expectEqual(
+        settings.enterShortcut,
+        AppSettings.defaultEnterShortcut,
+        "new enter shortcut default"
+    )
+}
+
+private func testIntermediateShortcutMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let settings = """
+    {
+      "schemaVersion": 2,
+      "toggleMouseBinding": { "button": 4 },
+      "holdMouseBinding": { "button": 0 },
+      "enterMouseBinding": { "button": 3 },
+      "toggleShortcut": {
+        "keyCode": 59,
+        "modifiers": ["control", "option", "command"]
+      },
+      "holdShortcut": {
+        "keyCode": 59,
+        "modifiers": ["control"]
+      },
+      "enterShortcut": { "keyCode": 36, "modifiers": [] },
+      "excludedBundleIDs": [],
+      "macroRules": [],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(settings.utf8).write(to: fileURL)
+
+    let loaded = SettingsRepository(fileURL: fileURL).load()
+
+    try expectEqual(
+        loaded.toggleShortcut,
+        AppSettings.defaultToggleShortcut,
+        "intermediate toggle shortcut repair"
+    )
+    try expectEqual(
+        loaded.holdShortcut,
+        AppSettings.defaultHoldShortcut,
+        "intermediate hold shortcut repair"
+    )
 }
 
 private func testSettingsRoundTrip() throws {
@@ -111,11 +207,18 @@ private func testSettingsRoundTrip() throws {
     let fileURL = directory.appendingPathComponent("settings.json")
     let repository = SettingsRepository(fileURL: fileURL)
     let settings = AppSettings(
-        mouseBinding: MouseBinding(button: 7),
-        doubaoShortcut: KeyboardShortcut(
+        toggleMouseBinding: MouseBinding(button: 7),
+        holdMouseBinding: MouseBinding(button: 0),
+        enterMouseBinding: MouseBinding(button: 3),
+        toggleShortcut: KeyboardShortcut(
             keyCode: 12,
             modifiers: [.command, .shift]
         ),
+        holdShortcut: KeyboardShortcut(
+            keyCode: 59,
+            modifiers: [.control, .option, .command]
+        ),
+        enterShortcut: KeyboardShortcut(keyCode: 36),
         excludedBundleIDs: [
             "example.app",
             AppSettings.bundleIdentifier,
@@ -165,6 +268,8 @@ let tests: [(String, () throws -> Void)] = [
     ("disabled rules", testDisabledRulesAreIgnored),
     ("rule validation", testRuleValidation),
     ("shortcut display name", testShortcutDisplayName),
+    ("legacy settings migration", testLegacySettingsMigration),
+    ("intermediate shortcut migration", testIntermediateShortcutMigration),
     ("settings round trip", testSettingsRoundTrip),
     ("corrupt settings backup", testCorruptSettingsBackup),
 ]
