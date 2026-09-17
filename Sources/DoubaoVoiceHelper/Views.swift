@@ -17,13 +17,8 @@ struct MenuBarView: View {
             Button(model.isPaused ? "恢复监听" : "暂停监听") {
                 model.setPaused(!model.isPaused)
             }
-            Button("打开设置…") {
-                NSApp.activate(ignoringOtherApps: true)
-                NSApp.sendAction(
-                    Selector(("showSettingsWindow:")),
-                    to: nil,
-                    from: nil
-                )
+            SettingsLink {
+                Label("打开设置…", systemImage: "gear")
             }
             Button("检查权限") {
                 model.refreshPermissions()
