@@ -16,6 +16,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$BIN_DIR/DoubaoVoiceHelper" "$APP_DIR/Contents/MacOS/DoubaoVoiceHelper"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 if command -v codesign >/dev/null 2>&1; then
     codesign --force --deep --sign - "$APP_DIR"
