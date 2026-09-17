@@ -114,6 +114,8 @@ final class AppModel: ObservableObject {
     private var workspaceObserver: NSObjectProtocol?
     private var monitorStarted = false
     private var captureMode = false
+    private var ignoreNextMouseUp = false
+    private var captureTimeout: DispatchWorkItem?
     private var pendingMouseDown: DispatchWorkItem?
     private let holdToTalkDelay: TimeInterval = 0.25
 
@@ -264,6 +266,20 @@ final class AppModel: ObservableObject {
         status = .capturing
         syncMonitorConfiguration()
         showOverlay("请按一下要绑定的额外鼠标键")
+
+        captureTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.captureMode else { return }
+            self.captureMode = false
+            self.status = self.hasRequiredPermissions ? .ready : .permission
+            self.syncMonitorConfiguration()
+            self.showNotice("鼠标键捕获超时，请重试")
+        }
+        captureTimeout = timeout
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 10,
+            execute: timeout
+        )
     }
 
     func addMacroRule() {
@@ -357,6 +373,9 @@ final class AppModel: ObservableObject {
         if captureMode {
             guard event.kind == .down else { return }
             captureMode = false
+            captureTimeout?.cancel()
+            captureTimeout = nil
+            ignoreNextMouseUp = true
             settings.mouseBinding.button = event.button
             status = .ready
             syncMonitorConfiguration()
@@ -365,9 +384,20 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if ignoreNextMouseUp {
+            if event.kind == .up {
+                ignoreNextMouseUp = false
+            }
+            return
+        }
+
         switch event.kind {
         case .down:
-            scheduleSessionStart(event)
+            if event.button == 0, !event.isLongPress {
+                scheduleSessionStart(event)
+            } else {
+                beginSession(event)
+            }
         case .up:
             pendingMouseDown?.cancel()
             pendingMouseDown = nil

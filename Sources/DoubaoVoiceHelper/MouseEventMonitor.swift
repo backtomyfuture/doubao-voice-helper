@@ -13,6 +13,21 @@ struct MouseButtonEvent {
     let kind: MouseEventKind
     let bundleIdentifier: String?
     let processIdentifier: pid_t
+    let isLongPress: Bool
+
+    init(
+        button: Int64,
+        kind: MouseEventKind,
+        bundleIdentifier: String?,
+        processIdentifier: pid_t,
+        isLongPress: Bool = false
+    ) {
+        self.button = button
+        self.kind = kind
+        self.bundleIdentifier = bundleIdentifier
+        self.processIdentifier = processIdentifier
+        self.isLongPress = isLongPress
+    }
 }
 
 enum MouseEventMonitorError: Error {
@@ -34,6 +49,13 @@ final class MouseEventMonitor {
     private var eventTap: CFMachPort?
     private var runLoop: CFRunLoop?
     private var thread: Thread?
+    private struct PressState {
+        var generation: UInt64 = 0
+        var work: DispatchWorkItem?
+        var isLong = false
+    }
+    private var pressStates: [Int64: PressState] = [:]
+    private var replayingButton: Int64?
 
     init(
         configuration: Configuration,
@@ -101,6 +123,15 @@ final class MouseEventMonitor {
     }
 
     func stop() {
+        lock.lock()
+        for button in pressStates.keys {
+            pressStates[button]?.generation &+= 1
+            pressStates[button]?.work?.cancel()
+        }
+        pressStates.removeAll()
+        replayingButton = nil
+        lock.unlock()
+
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
         }
@@ -116,6 +147,106 @@ final class MouseEventMonitor {
         lock.lock()
         defer { lock.unlock() }
         return configuration
+    }
+
+    private func isReplaying(_ button: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return replayingButton == button
+    }
+
+    private func armPress(
+        button: Int64,
+        bundleIdentifier: String?,
+        processIdentifier: pid_t
+    ) {
+        lock.lock()
+        var state = pressStates[button, default: PressState()]
+        state.generation &+= 1
+        let generation = state.generation
+        state.work?.cancel()
+        state.isLong = false
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            guard var state = self.pressStates[button],
+                  state.generation == generation
+            else {
+                self.lock.unlock()
+                return
+            }
+            state.isLong = true
+            state.work = nil
+            self.pressStates[button] = state
+            self.lock.unlock()
+            self.callbackHandler(
+                MouseButtonEvent(
+                    button: button,
+                    kind: .down,
+                    bundleIdentifier: bundleIdentifier,
+                    processIdentifier: processIdentifier,
+                    isLongPress: true
+                )
+            )
+        }
+        state.work = work
+        pressStates[button] = state
+        lock.unlock()
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(
+            deadline: .now() + .milliseconds(250),
+            execute: work
+        )
+    }
+
+    private func finishPress(_ button: Int64) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var state = pressStates[button],
+              state.work != nil || state.isLong
+        else {
+            return nil
+        }
+        state.generation &+= 1
+        state.work?.cancel()
+        state.work = nil
+        let wasLong = state.isLong
+        state.isLong = false
+        pressStates[button] = state
+        return wasLong
+    }
+
+    private func replayClick(button: Int64, at location: CGPoint) {
+        lock.lock()
+        replayingButton = button
+        lock.unlock()
+        defer {
+            lock.lock()
+            replayingButton = nil
+            lock.unlock()
+        }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        let mouseType: CGEventType = button == 0
+            ? .leftMouseDown
+            : .rightMouseDown
+        let mouseUpType: CGEventType = button == 0
+            ? .leftMouseUp
+            : .rightMouseUp
+        let mouseButton: CGMouseButton = button == 0 ? .left : .right
+        let down = CGEvent(
+            mouseEventSource: source,
+            mouseType: mouseType,
+            mouseCursorPosition: location,
+            mouseButton: mouseButton
+        )
+        let up = CGEvent(
+            mouseEventSource: source,
+            mouseType: mouseUpType,
+            mouseCursorPosition: location,
+            mouseButton: mouseButton
+        )
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
     }
 
     private static let eventTapCallback: CGEventTapCallBack = {
@@ -143,12 +274,18 @@ final class MouseEventMonitor {
 
         let configuration = monitor.currentConfiguration()
         let button = event.getIntegerValueField(.mouseEventButtonNumber)
+        if monitor.isReplaying(button) {
+            return Unmanaged.passUnretained(event)
+        }
         let application = NSWorkspace.shared.frontmostApplication
         let bundleIdentifier = application?.bundleIdentifier
         let processIdentifier = application?.processIdentifier ?? 0
 
         if configuration.capturing {
-            if type == .otherMouseDown {
+            let isDown = type == .otherMouseDown ||
+                type == .leftMouseDown ||
+                type == .rightMouseDown
+            if isDown {
                 monitor.callbackHandler(
                     MouseButtonEvent(
                         button: button,
@@ -177,6 +314,34 @@ final class MouseEventMonitor {
         let isDown = type == .otherMouseDown ||
             type == .leftMouseDown ||
             type == .rightMouseDown
+        if button == 0 || button == 1 {
+            if isDown {
+                monitor.armPress(
+                    button: button,
+                    bundleIdentifier: bundleIdentifier,
+                    processIdentifier: processIdentifier
+                )
+                return nil
+            }
+            if let wasLong = monitor.finishPress(button) {
+                if wasLong {
+                    monitor.callbackHandler(
+                        MouseButtonEvent(
+                            button: button,
+                            kind: .up,
+                            bundleIdentifier: bundleIdentifier,
+                            processIdentifier: processIdentifier,
+                            isLongPress: true
+                        )
+                    )
+                } else {
+                    monitor.replayClick(button: button, at: event.location)
+                }
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         monitor.callbackHandler(
             MouseButtonEvent(
                 button: button,
@@ -186,11 +351,6 @@ final class MouseEventMonitor {
             )
         )
 
-        // A left-button trigger must not make ordinary clicks unusable.
-        // The coordinator applies the long-press delay while the OS still
-        // receives the original left-button events.
-        return button == 0
-            ? Unmanaged.passUnretained(event)
-            : nil
+        return nil
     }
 }
