@@ -269,8 +269,12 @@ private struct MouseMappingRow: View {
                 Text(model.mouseBinding(for: role).displayName)
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 70, alignment: .leading)
-                Button("捕获") {
-                    model.beginMouseButtonCapture(for: role)
+                Button(model.captureRole == role ? "取消" : "设置") {
+                    if model.captureRole == role {
+                        model.cancelMouseButtonCapture()
+                    } else {
+                        model.beginMouseButtonCapture(for: role)
+                    }
                 }
             }
 
@@ -286,9 +290,6 @@ private struct MouseMappingRow: View {
                 )
                 Button(isRecordingShortcut ? "取消" : "设置") {
                     isRecordingShortcut.toggle()
-                }
-                Button("测试") {
-                    model.testShortcut(for: role)
                 }
             }
         }

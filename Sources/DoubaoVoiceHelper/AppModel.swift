@@ -94,6 +94,7 @@ final class AppModel: ObservableObject {
         accessibilityTrusted: false,
         inputMonitoringAuthorized: false
     )
+    @Published private(set) var captureRole: MouseBindingRole?
 
     let repository: SettingsRepository
     let permissionService: PermissionService
@@ -122,7 +123,6 @@ final class AppModel: ObservableObject {
     private var workspaceObserver: NSObjectProtocol?
     private var monitorStarted = false
     private var captureMode = false
-    private var captureRole: MouseBindingRole?
     private var captureTimeout: DispatchWorkItem?
     private var sessionCooldownUntil = Date.distantPast
     private let sessionCooldown: TimeInterval = 0.35
@@ -307,27 +307,6 @@ final class AppModel: ObservableObject {
         persist()
     }
 
-    func testShortcut(for role: MouseBindingRole) {
-        refreshPermissions()
-        guard permissionSnapshot.accessibilityTrusted else {
-            showNotice("请先授权辅助功能，系统才会接受模拟快捷键")
-            return
-        }
-        do {
-            let shortcut = shortcut(for: role)
-            if role == .hold {
-                try shortcutEmitter.keyDown(shortcut)
-                usleep(350_000)
-                try shortcutEmitter.keyUp(shortcut)
-            } else {
-                try shortcutEmitter.tap(shortcut)
-            }
-            showNotice("已发送豆包快捷键")
-        } catch {
-            showNotice("发送豆包快捷键失败")
-        }
-    }
-
     func beginMouseButtonCapture(for role: MouseBindingRole) {
         guard monitorStarted else {
             showNotice("请先授权辅助功能，再捕获鼠标键")
@@ -353,6 +332,17 @@ final class AppModel: ObservableObject {
             deadline: .now() + 10,
             execute: timeout
         )
+    }
+
+    func cancelMouseButtonCapture() {
+        guard captureMode else { return }
+        captureMode = false
+        captureRole = nil
+        captureTimeout?.cancel()
+        captureTimeout = nil
+        status = hasRequiredPermissions ? .ready : .permission
+        syncMonitorConfiguration()
+        overlayController.hide()
     }
 
     func addMacroRule() {
