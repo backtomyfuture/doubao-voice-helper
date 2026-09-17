@@ -30,6 +30,9 @@ struct MenuBarView: View {
             Button("检查权限") {
                 model.refreshPermissions()
                 model.requestAccessibilityPermission()
+                if model.requiresInputMonitoringForConfiguredButtons {
+                    model.requestInputMonitoringPermission()
+                }
             }
 
             Divider()
@@ -198,14 +201,16 @@ struct SettingsView: View {
                     settingsAction: model.openAccessibilitySettings
                 )
                 PermissionRow(
-                    title: "输入监控（可选）",
+                    title: model.requiresInputMonitoringForConfiguredButtons
+                        ? "输入监控（额外键必需）"
+                        : "输入监控（可选）",
                     granted: model.permissionSnapshot.inputMonitoringAuthorized,
-                    required: false,
+                    required: model.requiresInputMonitoringForConfiguredButtons,
                     action: model.requestInputMonitoringPermission,
                     settingsAction: model.openInputMonitoringSettings
                 )
                 Text(
-                    "辅助功能是必需权限，用于监听鼠标、发送快捷键和访问支持的文本控件。输入监控仅在部分 macOS 配置下需要。"
+                    "辅助功能用于监听鼠标、发送快捷键和访问支持的文本控件。前进/后退等额外鼠标键需要输入监控权限。"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)

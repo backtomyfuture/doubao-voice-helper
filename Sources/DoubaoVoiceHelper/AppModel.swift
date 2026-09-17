@@ -175,6 +175,14 @@ final class AppModel: ObservableObject {
         status.title
     }
 
+    var requiresInputMonitoringForConfiguredButtons: Bool {
+        [
+            settings.toggleMouseBinding.button,
+            settings.holdMouseBinding.button,
+            settings.enterMouseBinding.button,
+        ].contains { $0 >= 2 }
+    }
+
     var isPaused: Bool {
         get { status == .paused }
         set { setPaused(newValue) }
@@ -182,7 +190,7 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         permissionSnapshot = permissionService.snapshot()
-        if !permissionSnapshot.accessibilityTrusted, activeSession == nil
+        if !hasRequiredPermissions, activeSession == nil
         {
             status = .permission
         } else if status == .permission {
@@ -414,7 +422,9 @@ final class AppModel: ObservableObject {
 
     private func startMonitoringIfPossible() {
         guard !monitorStarted,
-              permissionSnapshot.accessibilityTrusted
+              permissionSnapshot.accessibilityTrusted,
+              !requiresInputMonitoringForConfiguredButtons ||
+                permissionSnapshot.inputMonitoringAuthorized
         else {
             return
         }
@@ -700,7 +710,9 @@ final class AppModel: ObservableObject {
     }
 
     private var hasRequiredPermissions: Bool {
-        permissionSnapshot.accessibilityTrusted
+        permissionSnapshot.accessibilityTrusted &&
+            (!requiresInputMonitoringForConfiguredButtons ||
+                permissionSnapshot.inputMonitoringAuthorized)
     }
 }
 
