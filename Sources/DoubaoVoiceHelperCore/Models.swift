@@ -133,7 +133,7 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 5
+    public static let currentSchemaVersion = 6
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
 
     public var schemaVersion: Int
@@ -232,6 +232,15 @@ public struct AppSettings: Codable, Equatable, Sendable {
         }
         if decodedSchemaVersion <= 4,
            decodedHoldShortcut == AppSettings.defaultToggleShortcut
+        {
+            decodedHoldShortcut = AppSettings.defaultHoldShortcut
+        }
+        let brokenSchemaFiveHoldShortcut = KeyboardShortcut(
+            keyCode: 55,
+            modifiers: [.command]
+        )
+        if decodedSchemaVersion <= 5,
+           decodedHoldShortcut == brokenSchemaFiveHoldShortcut
         {
             decodedHoldShortcut = AppSettings.defaultHoldShortcut
         }

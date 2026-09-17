@@ -281,6 +281,46 @@ private func testSchemaFourControlOnlyHoldMigration() throws {
     )
 }
 
+private func testSchemaFiveCommandOnlyHoldMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let settings = """
+    {
+      "schemaVersion": 5,
+      "toggleMouseBinding": { "button": 4 },
+      "holdMouseBinding": { "button": 0 },
+      "enterMouseBinding": { "button": 3 },
+      "toggleShortcut": {
+        "keyCode": 59,
+        "modifiers": ["control"]
+      },
+      "holdShortcut": {
+        "keyCode": 55,
+        "modifiers": ["command"]
+      },
+      "enterShortcut": { "keyCode": 36, "modifiers": [] },
+      "excludedBundleIDs": [],
+      "macroRules": [],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(settings.utf8).write(to: fileURL)
+
+    let loaded = SettingsRepository(fileURL: fileURL).load()
+
+    try expectEqual(
+        loaded.holdShortcut,
+        AppSettings.defaultHoldShortcut,
+        "schema five hold shortcut repair"
+    )
+}
+
 private func testSettingsRoundTrip() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -352,6 +392,7 @@ let tests: [(String, () throws -> Void)] = [
     ("intermediate shortcut migration", testIntermediateShortcutMigration),
     ("schema three shortcut migration", testBrokenSchemaThreeHoldShortcutMigration),
     ("schema four shortcut migration", testSchemaFourControlOnlyHoldMigration),
+    ("schema five shortcut migration", testSchemaFiveCommandOnlyHoldMigration),
     ("settings round trip", testSettingsRoundTrip),
     ("corrupt settings backup", testCorruptSettingsBackup),
 ]
