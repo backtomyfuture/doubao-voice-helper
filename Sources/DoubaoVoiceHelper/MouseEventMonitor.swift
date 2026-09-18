@@ -150,18 +150,22 @@ final class MouseEventMonitor {
             throw MouseEventMonitorError.alreadyStarted
         }
 
-        let mask =
-            (CGEventMask(1) << CGEventType.otherMouseDown.rawValue) |
-            (CGEventMask(1) << CGEventType.otherMouseUp.rawValue) |
-            (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue) |
-            (CGEventMask(1) << CGEventType.leftMouseDown.rawValue) |
-            (CGEventMask(1) << CGEventType.leftMouseUp.rawValue) |
-            (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue) |
-            (CGEventMask(1) << CGEventType.rightMouseDown.rawValue) |
-            (CGEventMask(1) << CGEventType.rightMouseUp.rawValue) |
-            (CGEventMask(1) << CGEventType.rightMouseDragged.rawValue) |
-            (CGEventMask(1) << CGEventType.keyDown.rawValue) |
-            (CGEventMask(1) << CGEventType.mouseMoved.rawValue)
+        let eventTypes: [CGEventType] = [
+            .otherMouseDown,
+            .otherMouseUp,
+            .otherMouseDragged,
+            .leftMouseDown,
+            .leftMouseUp,
+            .leftMouseDragged,
+            .rightMouseDown,
+            .rightMouseUp,
+            .rightMouseDragged,
+            .keyDown,
+            .mouseMoved,
+        ]
+        let mask = eventTypes.reduce(CGEventMask(0)) { result, type in
+            result | (CGEventMask(1) << type.rawValue)
+        }
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
