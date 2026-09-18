@@ -190,7 +190,7 @@ final class AppModel: ObservableObject {
             _ = permissionService.requestAccessibility()
         }
 
-        workspaceObserver = NotificationCenter.default.addObserver(
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
@@ -770,10 +770,21 @@ final class AppModel: ObservableObject {
     private func beginSession(_ event: MouseButtonEvent) {
         guard status != .paused,
               settings.onboardingCompleted,
-              activeSession == nil,
               Date() >= sessionCooldownUntil
         else { return }
         guard event.role == .hold || event.role == .toggle else { return }
+
+        if let existing = activeSession {
+            if event.role == .hold && existing.role == .toggle {
+                diagnostics.event(
+                    "session_preempted_by_hold",
+                    bundleIdentifier: event.bundleIdentifier
+                )
+                cancelActiveSession(announce: false)
+            } else {
+                return
+            }
+        }
 
         let shortcut = shortcut(for: event.role)
         let anchor: TextSessionAnchor?
@@ -826,6 +837,18 @@ final class AppModel: ObservableObject {
             }
             showOverlay(message, tone: .listening)
             syncMonitorConfiguration()
+
+            if session.role == .toggle {
+                let sessionID = session.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                    guard let self, self.activeSession?.id == sessionID else { return }
+                    self.diagnostics.event(
+                        "session_timeout",
+                        bundleIdentifier: self.activeSession?.bundleIdentifier
+                    )
+                    self.cancelActiveSession(announce: true)
+                }
+            }
         } catch {
             selectionRestorer.clear()
             activeSession = nil
@@ -1102,6 +1125,16 @@ final class AppModel: ObservableObject {
         permissionSnapshot.accessibilityTrusted &&
             (!requiresInputMonitoringForConfiguredButtons ||
                 permissionSnapshot.inputMonitoringAuthorized)
+    }
+
+    deinit {
+        if let workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+        }
+        for observer in lifecycleObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 }
 

@@ -4,7 +4,7 @@ import Foundation
 
 public enum HoldPolicy {
     public static let threshold: TimeInterval = 0.28
-    public static let preStartMoveTolerance: CGFloat = 6
+    public static let preStartMoveTolerance: CGFloat = 10
     public static let cancelArmDistance: CGFloat = 70
     public static let cancelDisarmDistance: CGFloat = 45
     public static let cancelDeadZone: CGFloat = 15
