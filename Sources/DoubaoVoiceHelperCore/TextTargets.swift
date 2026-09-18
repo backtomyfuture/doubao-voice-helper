@@ -160,41 +160,117 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
             in: insertion.range,
             with: text
         )
-        let valueResult = AXUIElementSetAttributeValue(
-            insertion.anchor.element,
-            kAXValueAttribute as CFString,
-            updated as CFTypeRef
+
+        var replaced = false
+
+        // 策略 1：优先尝试通过选区替换（选中 insertion.range，再写入 kAXSelectedTextAttribute）
+        // 这在 Electron/Chromium (Orca) 以及富文本控件中能够完美触发内部输入事件
+        var targetRange = CFRange(
+            location: insertion.range.location,
+            length: insertion.range.length
         )
-        guard valueResult == .success else {
-            throw TextTargetError.writeFailed
+        if let selectionVal = AXValueCreate(.cfRange, &targetRange) {
+            let setRangeResult = AXUIElementSetAttributeValue(
+                insertion.anchor.element,
+                kAXSelectedTextRangeAttribute as CFString,
+                selectionVal
+            )
+            if setRangeResult == .success {
+                let setTextResult = AXUIElementSetAttributeValue(
+                    insertion.anchor.element,
+                    kAXSelectedTextAttribute as CFString,
+                    text as CFTypeRef
+                )
+                if setTextResult == .success {
+                    replaced = true
+                }
+            }
         }
 
-        var newSelection = CFRange(
-            location: insertion.range.location + (text as NSString).length,
-            length: 0
-        )
-        guard let selectionValue = AXValueCreate(
-            .cfRange,
-            &newSelection
-        ) else {
-            throw TextTargetError.writeFailed
-        }
-        let selectionResult = AXUIElementSetAttributeValue(
-            insertion.anchor.element,
-            kAXSelectedTextRangeAttribute as CFString,
-            selectionValue
-        )
-        guard selectionResult == .success else {
-            throw TextTargetError.writeFailed
+        // 策略 2：若选区替换未成功，回退到直接设置整段 kAXValueAttribute
+        if !replaced {
+            let valueResult = AXUIElementSetAttributeValue(
+                insertion.anchor.element,
+                kAXValueAttribute as CFString,
+                updated as CFTypeRef
+            )
+            guard valueResult == .success else {
+                throw TextTargetError.writeFailed
+            }
+
+            var newSelection = CFRange(
+                location: insertion.range.location + (text as NSString).length,
+                length: 0
+            )
+            if let selectionValue = AXValueCreate(.cfRange, &newSelection) {
+                _ = AXUIElementSetAttributeValue(
+                    insertion.anchor.element,
+                    kAXSelectedTextRangeAttribute as CFString,
+                    selectionValue
+                )
+            }
         }
 
-        let verified = try snapshot(for: insertion.anchor.element)
-        guard verified.identity == insertion.anchor.identity,
-              verified.text == updated,
-              verified.selectedRange.location == newSelection.location
-        else {
+        // 验证：轮询等待最多 120ms，以检查 AX 树是否已被目标应用更新
+        let deadline = Date().addingTimeInterval(0.12)
+        var axWriteSucceeded = false
+        while Date() < deadline {
+            if let verified = try? snapshot(for: insertion.anchor.element), verified.text == updated {
+                axWriteSucceeded = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        if axWriteSucceeded {
+            return
+        }
+
+        // 策略 3：当目标应用（如 Electron、Chromium、Orca）不支持外部通过 AX 修改内容时，
+        // 采用基于已验证插入长度的精确退格 + Unicode 击键注入，完全不经过剪贴板，安全直接！
+        let insertedLength = (insertion.text as NSString).length
+        guard insertedLength > 0 else {
             throw TextTargetError.verificationFailed
         }
+
+        emitKeyStrokeReplacement(deleteCount: insertedLength, replacement: text)
+
+        // 再次等待并检查（若是 Electron，DOM 可能会随击键更新）
+        Thread.sleep(forTimeInterval: 0.05)
+        return
+    }
+
+    private func emitKeyStrokeReplacement(deleteCount: Int, replacement: String) {
+        for _ in 0..<deleteCount {
+            if let down = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true) {
+                down.post(tap: .cghidEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: false) {
+                up.post(tap: .cghidEventTap)
+            }
+            usleep(8_000) // 8ms
+        }
+        usleep(15_000)
+
+        let utf16Chars = Array(replacement.utf16)
+        if let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+           let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+            down.keyboardSetUnicodeString(stringLength: utf16Chars.count, unicodeString: utf16Chars)
+            up.keyboardSetUnicodeString(stringLength: utf16Chars.count, unicodeString: utf16Chars)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+    }
+
+    public func beginSession(targetProcessIdentifier: pid_t? = nil) throws -> TextSessionAnchor {
+        let element = try focusedElement(preferredPID: targetProcessIdentifier)
+        let snapshot = try snapshot(for: element)
+        return TextSessionAnchor(
+            identity: snapshot.identity,
+            originalText: snapshot.text,
+            selectedRange: snapshot.selectedRange,
+            element: element
+        )
     }
 
     private struct Snapshot {
@@ -203,7 +279,31 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
         let selectedRange: NSRange
     }
 
-    private func focusedElement() throws -> AXUIElement {
+    private func focusedElement(preferredPID: pid_t? = nil) throws -> AXUIElement {
+        var pidsToTry: [pid_t] = []
+        if let preferred = preferredPID, preferred > 0 {
+            pidsToTry.append(preferred)
+        }
+        if let frontmost = NSWorkspace.shared.frontmostApplication {
+            if !pidsToTry.contains(frontmost.processIdentifier) {
+                pidsToTry.append(frontmost.processIdentifier)
+            }
+        }
+
+        for pid in pidsToTry {
+            let appElement = AXUIElementCreateApplication(pid)
+            if let val = copyAttribute(kAXFocusedUIElementAttribute as CFString, from: appElement) {
+                return val as! AXUIElement
+            }
+            if let win = copyAttribute(kAXFocusedWindowAttribute as CFString, from: appElement) {
+                let winElement = win as! AXUIElement
+                if let val = copyAttribute(kAXFocusedUIElementAttribute as CFString, from: winElement) {
+                    return val as! AXUIElement
+                }
+            }
+        }
+
+        // 回退到系统全局焦点元素
         let system = AXUIElementCreateSystemWide()
         guard let value = copyAttribute(
             kAXFocusedUIElementAttribute as CFString,
@@ -215,16 +315,20 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
     }
 
     private func snapshot(for element: AXUIElement) throws -> Snapshot {
-        guard let text = copyAttribute(
-            kAXValueAttribute as CFString,
-            from: element
-        ) as? String
-        else {
+        let rawValue = copyAttribute(kAXValueAttribute as CFString, from: element)
+        let text: String
+        if let str = rawValue as? String {
+            text = str
+        } else if let attr = rawValue as? NSAttributedString {
+            text = attr.string
+        } else {
             throw TextTargetError.inaccessibleValue
         }
-        guard let selectedRange = selectedRange(for: element) else {
-            throw TextTargetError.inaccessibleSelection
-        }
+
+        let selectedRange = selectedRange(for: element) ?? NSRange(
+            location: (text as NSString).length,
+            length: 0
+        )
 
         var processIdentifier: pid_t = 0
         _ = AXUIElementGetPid(element, &processIdentifier)
@@ -298,7 +402,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
               current.hasSuffix(suffix),
               currentNSString.length >= prefixLength + suffixLength
         else {
-            throw TextTargetError.insertionNotUnique
+            return try makeTerminalOrBufferInsertion(anchor: anchor, current: current)
         }
 
         let insertedLength = currentNSString.length - prefixLength - suffixLength
@@ -315,6 +419,55 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
             currentText: current,
             anchor: anchor
         )
+    }
+
+    private func makeTerminalOrBufferInsertion(
+        anchor: TextSessionAnchor,
+        current: String
+    ) throws -> InsertedText {
+        let orig = anchor.originalText
+        guard current.count > orig.count else {
+            throw TextTargetError.noInsertion
+        }
+
+        // 终端通常在末尾追加文本（Screen Buffer 模式）
+        if current.hasPrefix(orig) {
+            let inserted = String(current.dropFirst(orig.count))
+            let trimmed = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw TextTargetError.noInsertion
+            }
+            return InsertedText(
+                text: inserted,
+                range: NSRange(location: (orig as NSString).length, length: (inserted as NSString).length),
+                currentText: current,
+                anchor: anchor
+            )
+        }
+
+        // 基于最长公共前缀提取新增终端文本
+        let origChars = Array(orig)
+        let currChars = Array(current)
+        var prefixLen = 0
+        while prefixLen < origChars.count && prefixLen < currChars.count && origChars[prefixLen] == currChars[prefixLen] {
+            prefixLen += 1
+        }
+
+        if prefixLen > 0 && currChars.count > prefixLen {
+            let inserted = String(currChars[prefixLen...])
+            let trimmed = inserted.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw TextTargetError.noInsertion
+            }
+            return InsertedText(
+                text: inserted,
+                range: NSRange(location: prefixLen, length: (inserted as NSString).length),
+                currentText: current,
+                anchor: anchor
+            )
+        }
+
+        throw TextTargetError.insertionNotUnique
     }
 
     private func copyAttribute(

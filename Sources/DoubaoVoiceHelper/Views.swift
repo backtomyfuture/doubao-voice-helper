@@ -54,6 +54,8 @@ struct MenuBarView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showManualExcludedInput = false
+    @State private var manualExcludedBundleID = ""
 
     var body: some View {
         Form {
@@ -85,53 +87,131 @@ struct SettingsView: View {
             }
 
             Section("输入") {
-                MouseMappingRow(role: .toggle)
-                    .environmentObject(model)
                 MouseMappingRow(role: .hold)
+                    .environmentObject(model)
+                MouseMappingRow(role: .toggle)
                     .environmentObject(model)
                 MouseMappingRow(role: .enter)
                     .environmentObject(model)
                 Text(
-                    "默认：前进键切换语音；左键长按使用左 Control + Option；后退键发送 Return。非浏览器里后退键会发送。"
+                    "默认：左键长按为按住式语音；前进键为切换式语音；后退键发送 Return。点击“录制按键”可直接按鼠标按键进行更换。"
                 )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
-            Section("导航排除") {
-                Text("这些应用里前进/后退仍是系统导航。左键长按不受此名单影响。")
+            Section("语音宏（特殊文字替换）") {
+                Text("听写结束时，将识别到的特定文字自动替换为目标符号或命令。长词优先匹配。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                ForEach(
-                    model.settings.excludedBundleIDs.indices,
-                    id: \.self
-                ) { index in
-                    HStack {
-                        TextField(
-                            "bundle identifier",
-                            text: Binding(
+
+                ForEach(model.settings.macroRules) { rule in
+                    HStack(spacing: 8) {
+                        Toggle(
+                            "",
+                            isOn: Binding(
                                 get: {
-                                    model.settings.excludedBundleIDs[index]
+                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.isEnabled ?? false
                                 },
-                                set: {
-                                    model.updateExcludedBundleID(
-                                        at: index,
-                                        value: $0
-                                    )
+                                set: { enabled in
+                                    model.updateMacroRule(id: rule.id) { $0.isEnabled = enabled }
                                 }
                             )
                         )
+                        .labelsHidden()
+
+                        TextField(
+                            "识别词 (如 approve)",
+                            text: Binding(
+                                get: {
+                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.source ?? ""
+                                },
+                                set: { source in
+                                    model.updateMacroRule(id: rule.id) { $0.source = source }
+                                }
+                            )
+                        )
+                        .frame(minWidth: 120)
+
+                        Image(systemName: "arrow.right")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+
+                        TextField(
+                            "替换为 (如 /approve)",
+                            text: Binding(
+                                get: {
+                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.replacement ?? ""
+                                },
+                                set: { replacement in
+                                    model.updateMacroRule(id: rule.id) { $0.replacement = replacement }
+                                }
+                            )
+                        )
+                        .frame(minWidth: 120)
+
                         Button(role: .destructive) {
-                            model.removeExcludedBundleID(at: index)
+                            model.removeMacroRule(id: rule.id)
                         } label: {
-                            Image(systemName: "minus.circle")
+                            Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
                     }
                 }
-                Button("添加排除应用") {
-                    model.addExcludedBundleID()
+
+                Button {
+                    model.addMacroRule()
+                } label: {
+                    Label("添加替换规则", systemImage: "plus.circle")
                 }
+            }
+
+            Section("浏览器与导航排除") {
+                Text("在此名单中的应用（如浏览器）内，鼠标侧键（前进/后退）将保留原生页面前进/后退功能，不触发语音或回车。左键长按语音在所有应用中均正常生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                ForEach(model.settings.excludedBundleIDs, id: \.self) { bundleID in
+                    ExcludedAppRow(bundleID: bundleID) {
+                        model.removeExcludedBundleID(bundleID)
+                    }
+                }
+
+                if showManualExcludedInput {
+                    HStack(spacing: 8) {
+                        TextField("输入应用的 Bundle Identifier (如 com.example.app)", text: $manualExcludedBundleID)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button("添加") {
+                            model.addExcludedBundleID(manualExcludedBundleID)
+                            manualExcludedBundleID = ""
+                            showManualExcludedInput = false
+                        }
+                        .disabled(manualExcludedBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Button("取消") {
+                            manualExcludedBundleID = ""
+                            showManualExcludedInput = false
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        model.pickAndAddExcludedApplication()
+                    } label: {
+                        Label("选择应用程序…", systemImage: "plus.circle")
+                    }
+
+                    Button {
+                        showManualExcludedInput.toggle()
+                    } label: {
+                        Label(showManualExcludedInput ? "收起手动输入" : "手动输入 Bundle ID", systemImage: "pencil")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.top, 4)
             }
 
             Section("权限") {
@@ -180,41 +260,60 @@ private struct MouseMappingRow: View {
     @State private var isRecordingShortcut = false
     let role: MouseBindingRole
 
+    private var isCapturing: Bool {
+        model.captureRole == role
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
                 Text(role.displayName)
                     .font(.headline)
+                    .frame(minWidth: 90, alignment: .leading)
+
                 Spacer()
-                TextField(
-                    "button",
-                    text: Binding(
-                        get: {
-                            String(model.mouseBinding(for: role).button)
-                        },
-                        set: {
-                            if let value = Int64($0) {
-                                model.setMouseButton(value, for: role)
-                            }
-                        }
-                    )
-                )
-                .frame(width: 55)
-                Text(model.mouseBinding(for: role).displayName)
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 70, alignment: .leading)
-                Button(model.captureRole == role ? "取消" : "设置") {
-                    if model.captureRole == role {
+
+                // 鼠标按键 Badge 友好展示
+                HStack(spacing: 6) {
+                    Image(systemName: "computermouse.fill")
+                        .foregroundStyle(isCapturing ? .orange : .secondary)
+                        .font(.caption)
+                    Text(model.mouseBinding(for: role).displayName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(isCapturing ? .orange : .primary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(isCapturing ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08))
+                .cornerRadius(6)
+
+                // 录制鼠标键按钮
+                if isCapturing {
+                    Button {
                         model.cancelMouseButtonCapture()
-                    } else {
-                        model.beginMouseButtonCapture(for: role)
+                    } label: {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("请按鼠标键… (点击取消)")
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button {
+                        model.beginMouseButtonCapture(for: role)
+                    } label: {
+                        Label("录制按键", systemImage: "hand.tap")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
 
             HStack {
-                Text("豆包快捷键")
+                Text("触发的快捷键")
                     .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                Spacer()
                 ShortcutRecorder(
                     shortcut: Binding(
                         get: { model.shortcut(for: role) },
@@ -222,11 +321,12 @@ private struct MouseMappingRow: View {
                     ),
                     isRecording: $isRecordingShortcut
                 )
-                Button(isRecordingShortcut ? "取消" : "设置") {
+                Button(isRecordingShortcut ? "完成" : "修改") {
                     isRecordingShortcut.toggle()
                 }
             }
         }
+        .padding(.vertical, 3)
     }
 }
 
@@ -411,5 +511,80 @@ private final class ShortcutRecorderView: NSView {
             ),
             withAttributes: attributes
         )
+    }
+}
+
+struct ExcludedAppMetadata {
+    let bundleID: String
+    let name: String
+    let icon: NSImage
+
+    private static let knownFriendlyNames: [String: String] = [
+        "com.apple.Safari": "Safari 浏览器",
+        "com.google.Chrome": "Google Chrome",
+        "com.microsoft.edgemac": "Microsoft Edge 浏览器",
+        "org.mozilla.firefox": "Firefox 火狐浏览器",
+        "company.thebrowser.Browser": "Arc 浏览器",
+        "com.stablyai.orca": "Orca",
+        "com.citrolabs.ego": "Ego 浏览器",
+        "com.citrolabs.ego.lite": "Ego Lite",
+        "com.brave.Browser": "Brave 浏览器",
+        "com.operasoftware.Opera": "Opera 浏览器",
+        "com.vivaldi.Vivaldi": "Vivaldi 浏览器",
+        "com.apple.Terminal": "终端 (Terminal)",
+        "com.mitchellh.ghostty": "Ghostty",
+        "com.github.wez.wezterm": "WezTerm",
+        "com.googlecode.iterm2": "iTerm2",
+        AppSettings.bundleIdentifier: "豆包语音助手",
+    ]
+
+    static func resolve(for bundleID: String) -> ExcludedAppMetadata {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let fileManagerName = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            let friendlyName = knownFriendlyNames[bundleID] ?? fileManagerName
+            return ExcludedAppMetadata(bundleID: bundleID, name: friendlyName, icon: icon)
+        } else {
+            let friendlyName = knownFriendlyNames[bundleID] ?? (bundleID.components(separatedBy: ".").last ?? bundleID)
+            let icon = NSWorkspace.shared.icon(for: .application)
+            return ExcludedAppMetadata(bundleID: bundleID, name: friendlyName, icon: icon)
+        }
+    }
+}
+
+private struct ExcludedAppRow: View {
+    let bundleID: String
+    let onDelete: () -> Void
+
+    private var metadata: ExcludedAppMetadata {
+        ExcludedAppMetadata.resolve(for: bundleID)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: metadata.icon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(metadata.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text(bundleID)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("从排除名单中移除")
+        }
+        .padding(.vertical, 3)
     }
 }

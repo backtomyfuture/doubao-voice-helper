@@ -124,10 +124,12 @@ public struct MouseBinding: Codable, Equatable, Sendable {
 
     public var displayName: String {
         switch button {
-        case 0: return "左键"
-        case 1: return "右键"
-        case 2: return "中键"
-        default: return "额外键 \(button)"
+        case 0: return "鼠标左键"
+        case 1: return "鼠标右键"
+        case 2: return "鼠标中键"
+        case 3: return "后退键 (侧键下)"
+        case 4: return "前进键 (侧键上)"
+        default: return "额外按键 \(button)"
         }
     }
 }
@@ -152,7 +154,7 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 8
+    public static let currentSchemaVersion = 9
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
     public static let doubaoClientBundleIDs = [
         "com.bot.pc.doubao",
@@ -316,10 +318,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
             decodedHoldExcludedBundleIDs.append(AppSettings.bundleIdentifier)
         }
         holdExcludedBundleIDs = decodedHoldExcludedBundleIDs
-        macroRules = try container.decodeIfPresent(
+        var decodedMacroRules = try container.decodeIfPresent(
             [MacroRule].self,
             forKey: .macroRules
         ) ?? AppSettings.defaultMacroRules
+        if decodedSchemaVersion < 9 {
+            for defaultRule in AppSettings.defaultMacroRules {
+                if !decodedMacroRules.contains(where: { $0.source == defaultRule.source }) {
+                    decodedMacroRules.append(defaultRule)
+                }
+            }
+        }
+        macroRules = decodedMacroRules
         launchAtLogin = try container.decodeIfPresent(
             Bool.self,
             forKey: .launchAtLogin
@@ -434,6 +444,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let defaultEnterShortcut = KeyboardShortcut(keyCode: 36)
 
     public static let defaultMacroRules = [
+        MacroRule(source: "approve", replacement: "/approve"),
+        MacroRule(source: "Approve", replacement: "/approve"),
         MacroRule(source: "斜杠批准", replacement: "/approve"),
         MacroRule(source: "斜杠任务", replacement: "/missions"),
         MacroRule(source: "斜杠", replacement: "/"),

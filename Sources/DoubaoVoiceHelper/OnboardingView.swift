@@ -95,10 +95,10 @@ struct OnboardingView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("确认\(role.displayName)")
                 .font(.headline)
-            Text("请按下 \(binding.displayName)（button \(binding.button)）。")
+            Text("请按下 \(binding.displayName)。")
             if let heard = model.lastHeardButton {
-                Text("收到 button \(heard)")
-                    .font(.title3.monospaced())
+                Text("收到：\(MouseBinding(button: heard).displayName)")
+                    .font(.title3.weight(.medium))
             } else {
                 Text("等待按键…")
                     .foregroundStyle(.secondary)

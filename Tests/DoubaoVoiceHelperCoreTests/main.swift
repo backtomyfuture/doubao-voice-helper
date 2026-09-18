@@ -691,7 +691,54 @@ private func testSchemaEightStripsDoubaoExclude() throws {
         !loaded.excludedBundleIDs.contains("com.bot.pc.doubao"),
         "schema 8 strips doubao exclude"
     )
-    try expectEqual(loaded.schemaVersion, 8, "schema bumped to 8")
+    try expectEqual(loaded.schemaVersion, 9, "schema bumped to 9")
+}
+
+private func testSchemaNineMacroRulesMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let settings = """
+    {
+      "schemaVersion": 8,
+      "toggleMouseBinding": { "button": 4 },
+      "holdMouseBinding": { "button": 0 },
+      "enterMouseBinding": { "button": 3 },
+      "toggleShortcut": { "keyCode": 59, "modifiers": ["control"] },
+      "holdShortcut": { "keyCode": 59, "modifiers": ["control", "option"] },
+      "enterShortcut": { "keyCode": 36, "modifiers": [] },
+      "excludedBundleIDs": ["com.jarod.doubao-voice-helper"],
+      "macroRules": [
+        {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "source": "旧规则",
+          "replacement": "新文本",
+          "isEnabled": true
+        }
+      ],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(settings.utf8).write(to: fileURL)
+    let loaded = SettingsRepository(fileURL: fileURL).load()
+    try expectEqual(loaded.schemaVersion, 9, "schema bumped to 9")
+    try expect(
+        loaded.macroRules.contains(where: { $0.source == "approve" && $0.replacement == "/approve" }),
+        "schema 9 adds approve rule"
+    )
+    try expect(
+        loaded.macroRules.contains(where: { $0.source == "Approve" && $0.replacement == "/approve" }),
+        "schema 9 adds Approve rule"
+    )
+    try expect(
+        loaded.macroRules.contains(where: { $0.source == "旧规则" }),
+        "preserves existing user rules"
+    )
 }
 
 let tests: [(String, () throws -> Void)] = [
@@ -718,6 +765,7 @@ let tests: [(String, () throws -> Void)] = [
     ("hold start evaluator", testHoldStartEvaluator),
     ("navigation exclude lists", testNavigationExcludeDoesNotIncludeDoubao),
     ("schema eight strips doubao", testSchemaEightStripsDoubaoExclude),
+    ("schema nine macro rules migration", testSchemaNineMacroRulesMigration),
 ]
 
 var failures = 0

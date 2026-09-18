@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import os
+import UniformTypeIdentifiers
 import DoubaoVoiceHelperCore
 
 enum AppStatus {
@@ -419,14 +420,29 @@ final class AppModel: ObservableObject {
         persist()
     }
 
+    func removeMacroRule(id: UUID) {
+        settings.macroRules.removeAll { $0.id == id }
+        persist()
+    }
+
     func updateMacroRule(at index: Int, _ update: (inout MacroRule) -> Void) {
         guard settings.macroRules.indices.contains(index) else { return }
         update(&settings.macroRules[index])
         persist()
     }
 
-    func addExcludedBundleID() {
-        settings.excludedBundleIDs.append("")
+    func updateMacroRule(id: UUID, _ update: (inout MacroRule) -> Void) {
+        guard let index = settings.macroRules.firstIndex(where: { $0.id == id }) else { return }
+        update(&settings.macroRules[index])
+        persist()
+    }
+
+    func addExcludedBundleID(_ bundleID: String = "") {
+        let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !settings.excludedBundleIDs.contains(trimmed) else { return }
+        settings.excludedBundleIDs.append(trimmed)
+        syncMonitorConfiguration()
         persist()
     }
 
@@ -439,6 +455,12 @@ final class AppModel: ObservableObject {
         persist()
     }
 
+    func removeExcludedBundleID(_ bundleID: String) {
+        settings.excludedBundleIDs.removeAll { $0 == bundleID }
+        syncMonitorConfiguration()
+        persist()
+    }
+
     func updateExcludedBundleID(at index: Int, value: String) {
         guard settings.excludedBundleIDs.indices.contains(index) else {
             return
@@ -446,6 +468,38 @@ final class AppModel: ObservableObject {
         settings.excludedBundleIDs[index] = value
         syncMonitorConfiguration()
         persist()
+    }
+
+    func pickAndAddExcludedApplication(window: NSWindow? = nil) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "添加排除"
+        panel.message = "选择在其中保留鼠标前进/后退原生导航的应用"
+
+        let targetWindow = window ?? NSApp.keyWindow ?? NSApp.windows.first
+        if let targetWindow {
+            panel.beginSheetModal(for: targetWindow) { [weak self] response in
+                guard response == .OK, let self else { return }
+                for url in panel.urls {
+                    if let bundle = Bundle(url: url), let bundleID = bundle.bundleIdentifier {
+                        self.addExcludedBundleID(bundleID)
+                    }
+                }
+            }
+        } else {
+            panel.begin { [weak self] response in
+                guard response == .OK, let self else { return }
+                for url in panel.urls {
+                    if let bundle = Bundle(url: url), let bundleID = bundle.bundleIdentifier {
+                        self.addExcludedBundleID(bundleID)
+                    }
+                }
+            }
+        }
     }
 
     func preview(_ text: String) -> MacroResult {
@@ -579,7 +633,7 @@ final class AppModel: ObservableObject {
             if let confirmationRole {
                 lastHeardButton = event.button
                 let expected = mouseBinding(for: confirmationRole).button
-                showOverlay("收到 button \(event.button)", tone: .listening)
+                showOverlay("收到 \(MouseBinding(button: event.button).displayName)", tone: .listening)
                 if event.button == expected {
                     captureMode = false
                     captureTimeout?.cancel()
@@ -589,7 +643,7 @@ final class AppModel: ObservableObject {
                     skipOnboardingConfirm(for: confirmationRole)
                 } else {
                     showNotice(
-                        "收到 button \(event.button)，请按 \(MouseBinding(button: expected).displayName)"
+                        "收到 \(MouseBinding(button: event.button).displayName)，请按 \(MouseBinding(button: expected).displayName)"
                     )
                 }
                 return
@@ -603,7 +657,7 @@ final class AppModel: ObservableObject {
             status = .ready
             syncMonitorConfiguration()
             persist()
-            showNotice("已绑定\(role.displayName) \(event.button)")
+            showNotice("已将\(role.displayName)设置为：\(MouseBinding(button: event.button).displayName)")
             return
         }
 
@@ -652,8 +706,25 @@ final class AppModel: ObservableObject {
         guard event.role == .hold || event.role == .toggle else { return }
 
         let shortcut = shortcut(for: event.role)
+        let anchor: TextSessionAnchor?
+        do {
+            let captured = try textAdapter.beginSession(targetProcessIdentifier: event.processIdentifier)
+            anchor = captured
+            diagnostics.event(
+                "anchor_captured",
+                bundleIdentifier: event.bundleIdentifier,
+                role: "\(captured.identity.role):\(captured.originalText.count)chars"
+            )
+        } catch {
+            anchor = nil
+            diagnostics.event(
+                "anchor_failed",
+                bundleIdentifier: event.bundleIdentifier,
+                role: "\(error)"
+            )
+        }
         let session = ActiveSession(
-            anchor: nil,
+            anchor: anchor,
             role: event.role,
             shortcut: shortcut,
             bundleIdentifier: event.bundleIdentifier,
@@ -759,10 +830,82 @@ final class AppModel: ObservableObject {
         }
 
         let announceStop = session.cancelArmed
-        finishSession(session.id, announceStop: announceStop)
+        if announceStop {
+            session.cancellation.cancel()
+            finishSession(session.id, announceStop: true)
+            return
+        }
+
+        guard let anchor = session.anchor, !settings.macroRules.isEmpty else {
+            diagnostics.event(
+                "macro_skipped",
+                bundleIdentifier: session.bundleIdentifier,
+                role: session.anchor == nil ? "no_anchor" : "no_rules"
+            )
+            finishSession(session.id, announceStop: false)
+            return
+        }
+
+        status = .processing
+        showOverlay("正在处理", tone: .listening)
+        let rules = settings.macroRules
+        let adapter = textAdapter
+        let token = session.cancellation
+        let diagnostics = self.diagnostics
+        let bundleID = session.bundleIdentifier
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let inserted = try adapter.waitForInsertedText(
+                    after: anchor,
+                    timeout: 1.8
+                )
+                guard !token.isCancelled else { return }
+                diagnostics.event(
+                    "inserted_text",
+                    bundleIdentifier: bundleID,
+                    role: inserted.text
+                )
+                let result = MacroEngine().apply(inserted.text, rules: rules)
+                diagnostics.event(
+                    "macro_result",
+                    bundleIdentifier: bundleID,
+                    role: "matches=\(result.matchCount):output=\(result.output)"
+                )
+                guard result.changed else {
+                    DispatchQueue.main.async {
+                        self?.finishSession(session.id, announceStop: false)
+                    }
+                    return
+                }
+                guard !token.isCancelled else { return }
+                try adapter.replace(inserted, with: result.output)
+                diagnostics.event("replace_success", bundleIdentifier: bundleID)
+                DispatchQueue.main.async {
+                    self?.finishSession(
+                        session.id,
+                        announceStop: false,
+                        noticeMessage: "已应用 \(result.matchCount) 条语音宏"
+                    )
+                }
+            } catch {
+                guard !token.isCancelled else { return }
+                diagnostics.event(
+                    "replace_error",
+                    bundleIdentifier: bundleID,
+                    role: "\(error)"
+                )
+                DispatchQueue.main.async {
+                    self?.finishSession(session.id, announceStop: false)
+                }
+            }
+        }
     }
 
-    private func finishSession(_ id: UUID, announceStop: Bool) {
+    private func finishSession(
+        _ id: UUID,
+        announceStop: Bool,
+        noticeMessage: String? = nil
+    ) {
         guard activeSession?.id == id else { return }
         activeSession = nil
         sessionCooldownUntil = Date().addingTimeInterval(sessionCooldown)
@@ -770,6 +913,8 @@ final class AppModel: ObservableObject {
         syncMonitorConfiguration()
         if announceStop {
             showOverlay("已停止", tone: .stopped, autoHide: 1.4)
+        } else if let noticeMessage {
+            showOverlay(noticeMessage, tone: .send, autoHide: 1.2)
         } else {
             overlayController.hide()
         }
@@ -890,7 +1035,7 @@ final class AppModel: ObservableObject {
     }
 }
 
-private final class Diagnostics {
+private final class Diagnostics: @unchecked Sendable {
     private let logger = Logger(
         subsystem: "com.jarod.doubao-voice-helper",
         category: "runtime"
