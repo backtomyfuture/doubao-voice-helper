@@ -28,15 +28,11 @@ fi
 
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     SIGNING_IDENTITY="$CODESIGN_IDENTITY"
-elif [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
-    SIGNING_IDENTITY="-"
-else
+elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$LOCAL_SIGNING_IDENTITY\""; then
     SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
-    if ! security find-identity -v -p codesigning 2>/dev/null \
-        | grep -Fq "\"$SIGNING_IDENTITY\""; then
-        echo "No stable signing identity named \"$SIGNING_IDENTITY\" was found. Falling back to ad-hoc signing (-)." >&2
-        SIGNING_IDENTITY="-"
-    fi
+else
+    echo "No stable signing identity named \"$LOCAL_SIGNING_IDENTITY\" was found. Falling back to ad-hoc signing (-)." >&2
+    SIGNING_IDENTITY="-"
 fi
 
 codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
