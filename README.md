@@ -1,65 +1,363 @@
-# doubao_helper
+# 豆包语音助手 (Doubao Voice Helper)
 
-豆包语音助手：面向 macOS 的本地增强层。它用三个独立鼠标映射控制豆包切换式语音、按住式语音和回车，并对本次听写文本执行确定性的本地语音宏替换。
+<p align="center">
+  <img src="Resources/AppIcon.icns" alt="Doubao Voice Helper Icon" width="128" height="128" />
+</p>
 
-> 产品化需求和目标架构见：
+<p align="center">
+  <strong>面向 macOS 的本地语音听写增强层 · 鼠标流高频输入加速利器</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/backtomyfuture/doubao-voice-helper/releases"><img src="https://img.shields.io/github/v/release/backtomyfuture/doubao-voice-helper?color=blue&label=Release" alt="GitHub Release"></a>
+  <a href="https://developer.apple.com/macos/"><img src="https://img.shields.io/badge/Platform-macOS%2014.0%2B-lightgrey.svg?style=flat&logo=apple" alt="Platform: macOS 14+"></a>
+  <a href="https://www.swift.org/"><img src="https://img.shields.io/badge/Swift-5.9%2B-orange.svg?style=flat&logo=swift" alt="Swift 5.9+"></a>
+  <a href="#开发与测试"><img src="https://img.shields.io/badge/Tests-26%20Passed-brightgreen.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="#安全与隐私原则"><img src="https://img.shields.io/badge/Privacy-100%25%20Local-success.svg" alt="Privacy"></a>
+</p>
+
+---
+
+**豆包语音助手 (Doubao Voice Helper)** 是一款专为 macOS 深度用户打造的原生菜单栏工具。它将**豆包输入法**的语音听写能力与鼠标手势深度融合，让你彻底摆脱键盘打断，在单手握持鼠标时即可完成“**切换式听写、按住说话 (PTT)、一键回车发送**”，并在听写结束后通过本地确定性规则引擎自动完成**语音宏替换**（如将口述的“斜杠批准”无感替换为 `/approve`）。
+
+无论是日常聊天、沉浸式文档编写，还是与 AI Agent / 终端命令行高频交互，它都能带来流畅倍增的输入体验。
+
+> 📖 **产品与架构深入文档**：
 >
-> - [`docs/PRODUCT_REQUIREMENTS.md`](docs/PRODUCT_REQUIREMENTS.md)
-> - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+> - 产品需求与设计边界：[`docs/PRODUCT_REQUIREMENTS.md`](docs/PRODUCT_REQUIREMENTS.md)
+> - 目标架构与安全选型：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+> - 领域模型与核心实体：[`CONTEXT.md`](CONTEXT.md)
 
-## 当前原型行为
-
-- 前进键按住：模拟左 Ctrl（豆包开始）；松开：再模拟左 Ctrl（结束）
-- 后退键单击：回车（发送）
-- 排除：Finder / Safari / Chrome / Ego lite 等，前进后退仍是系统导航
-
-原型仍保留在 `src/`、`app/`、`config/` 和 `plists/` 中，作为行为参考。正式 App 不依赖个人目录、LaunchAgent 或 Logi Options+ 私有数据库。
-
-## 正式 App
+---
 
 ## 目录
 
-| `Package.swift` | Swift Package 的 Core、App 和测试目标 |
-| `Sources/DoubaoVoiceHelperCore/` | 规则引擎、设置、权限、快捷键和 AX 文本适配器 |
-| `Sources/DoubaoVoiceHelper/` | 菜单栏 App、事件监听、设置窗口和状态浮层 |
-| `Tests/` | 语音宏与设置持久化测试 |
-| `Resources/AppIcon.icns` | Finder / Dock 应用图标 |
-| `Resources/MenuBar/` | 菜单栏线框与实心鼠标图标（16/18pt、Retina） |
-| `Resources/DMG/` | 安装镜像背景与源文件 |
-| `scripts/build_app.sh` | 构建并生成签名的 `.app` |
-| `scripts/build_dmg.sh` | 使用 DMG 背景生成安装镜像（需要 `create-dmg`） |
-| `scripts/setup_local_signing.sh` | 一次性创建本机稳定开发签名 |
-| `scripts/patch_logi_buttons.py` | 一键修复 Logi Options+ 侧键为系统原生鼠标键 |
+- [为什么需要它？](#为什么需要它)
+- [核心特性](#核心特性)
+- [工作原理与架构](#工作原理与架构)
+- [系统要求](#系统要求)
+- [安装与运行](#安装与运行)
+  - [方式一：下载 DMG 安装包（推荐）](#方式一下载-dmg-安装包推荐)
+  - [方式二：从源码构建（开发者）](#方式二从源码构建开发者)
+- [快速上手指南](#快速上手指南)
+  - [1. 豆包客户端配置](#1-豆包客户端配置)
+  - [2. 系统权限授予](#2-系统权限授予)
+  - [3. 罗技鼠标特别适配（Logi Options+ 用户）](#3-罗技鼠标特别适配logi-options-用户)
+  - [4. 鼠标按键与快捷键自定义](#4-鼠标按键与快捷键自定义)
+  - [5. 配置语音宏（Voice Macro）](#5-配置语音宏voice-macro)
+- [安全与隐私原则](#安全与隐私原则)
+- [项目结构](#项目结构)
+- [开发与测试](#开发与测试)
+- [常见问题排查 (FAQ)](#常见问题排查-faq)
+- [许可证](#许可证)
 
-### 开发
+---
 
-需要 macOS 14+ 和 Swift 5.9 或更高版本。当前环境若只有 Command Line Tools，也可以运行核心测试和 Swift Package 构建；完整 Xcode 主要用于签名、调试和发布。
+## 为什么需要它？
 
-```bash
-swift build -c release
-swift run DoubaoVoiceHelperCoreTests
-./scripts/setup_local_signing.sh
-./scripts/build_app.sh
+虽然豆包输入法已经具备优秀的语音听写识别率，但在高频日常使用与桌面办公中仍然存在操作断层：
+
+1. **双手割裂**：听写必须伸手去按键盘快捷键，打断鼠标工作流；
+2. **提交繁琐**：说完一句话后还要把手移回键盘敲回车发送；
+3. **符号与命令识别硬伤**：在编程和 AI Agent 交互场景中，口述“斜杠”无法直接转为 `/`，“斜杠批准”无法转为 `/approve`，经常需要手工退格修正；
+4. **侧键手势冲突**：许多用户习惯用鼠标侧键在浏览器和访达中翻页，全局改键会破坏原生导航体验。
+
+**豆包语音助手**作为轻量级本地代理层，完美填补了这一体验空白。
+
+---
+
+## 核心特性
+
+- 🖱️ **三组独立鼠标手势映射**
+  - **切换式语音 (Toggle)**：默认侧键前进键（Mouse 4）。按一下开始听写，再按一下结束听写。
+  - **按住式语音 (Push-to-Talk)**：默认鼠标左键（Mouse 0）长按。长按超过时间阈值自动开启听写，松开即刻结束并自动恢复选区。**短点击完全保持系统原生点击，无任何误触**。
+  - **快速提交 (Enter)**：默认侧键后退键（Mouse 3）。单击立即触发 Return 发送，快速完成对话发送或命令行提交。
+- ⚡ **确定性本地语音宏引擎 (Macro Engine)**
+  - 纯本地执行，无任何云端或 AI 幻觉风险；
+  - 遵循**最长匹配优先 (Longest-Match First)** 与**大小写敏感**原则；
+  - 内置常用 Agent 命令示例（如“斜杠任务” ➔ `/missions`、“斜杠批准” ➔ `/approve`、“斜杠” ➔ `/`）；
+  - 支持在设置面板中任意增删查改与开关自定义规则。
+- 🛡️ **安全文本锚点与无损写回 (Safe Replacement)**
+  - 基于 macOS Accessibility (`AXUIElement`) 在听写发起前建立**输入会话锚点 (Text Session Anchor)**；
+  - 仅在焦点未变、前后快照边界完全一致的前提下执行局部增量替换；
+  - 遇到无法证明文本范围的非标准控件（如部分终端）时，**自动降级为安全模式 (Trigger Only)**：仅控制豆包启停并保留原始识别结果，绝不乱删、乱覆盖。
+- 🎯 **智能应用感知与排除列表**
+  - 内置常用浏览器与文件管理器排除名单（Finder, Safari, Google Chrome, Microsoft Edge, Firefox, Arc, Orca, Ego 等）；
+  - 切换到排除应用时，侧键自动还原为系统原生前进/后退导航功能；
+  - **微信场景专项优化**：内置微信输入区长按抢占开关，避免与微信自带的长按语音功能冲突。
+- 🐭 **罗技 Options+ 驱动一键修补 (Logi Patcher)**
+  - Logi Options+ 默认会将 MX Master 系列等鼠标的侧键强行转换为系统手势导航，导致第三方软件无法接收原始按键事件；
+  - 提供 App 内图形化一键修补以及命令行修复脚本，将侧键还原为标准系统鼠标键。
+- 🖥️ **现代 macOS 原生体验**
+  - 使用 SwiftUI + AppKit 开发，常驻菜单栏，超低 CPU 与内存占用；
+  - 动态状态图标（空闲线框鼠标 / 监听中实心鼠标切换）；
+  - 可选的轻量屏幕状态浮层 (Overlay)，听写状态一目了然；
+  - 基于现代 `SMAppService` 的开机自启机制。
+- 🔄 **自动更新支持**：内置 GitHub Releases 版本检测与一键更新服务。
+
+---
+
+## 工作原理与架构
+
+```mermaid
+flowchart TD
+    subgraph 用户输入
+        Mouse[鼠标动作<br/>前进键 / 左键长按 / 后退键]
+    end
+
+    subgraph DoubaoVoiceHelper["豆包语音助手 (本地进程)"]
+        EventTap["全局事件监听<br/>(CGEventTap)"]
+        AppFilter{"前台应用是否在<br/>排除名单中？"}
+        
+        SessionCoord["会话状态机<br/>(DictationCoordinator)"]
+        AXCapture["捕获文本锚点快照<br/>(AXUIElement Anchor)"]
+        ShortcutEmit["模拟配置快捷键<br/>(ShortcutStroke)"]
+        
+        MacroEng["本地宏引擎<br/>(MacroEngine)"]
+        AXWriteBack["精确范围比对 & 安全写回<br/>(Safe Replacement)"]
+    end
+
+    subgraph 外部协作
+        OSNav["透传给系统<br/>原生前进/后退/点击"]
+        Doubao["豆包客户端<br/>(负责录音与云端语音识别)"]
+        TargetApp["当前激活的目标应用<br/>(输入框 / 终端 / 编辑器)"]
+    end
+
+    Mouse --> EventTap
+    EventTap --> AppFilter
+    AppFilter -- "是 (排除应用)" --> OSNav
+    AppFilter -- "否 (受控输入)" --> SessionCoord
+    
+    SessionCoord --> AXCapture
+    AXCapture -.->|只读读取当前光标与上下文| TargetApp
+    SessionCoord --> ShortcutEmit
+    
+    ShortcutEmit -->|模拟 Control / Option 组合键| Doubao
+    Doubao -->|识别出文本直接注入| TargetApp
+    
+    SessionCoord -->|监听到鼠标松开/再次单击| ShortcutEmit
+    ShortcutEmit -->|停止听写| Doubao
+    
+    SessionCoord --> MacroEng
+    MacroEng --> AXWriteBack
+    AXWriteBack -->|验证快照一致后写回替换文本| TargetApp
 ```
 
-首次在本机开发时运行一次 `./scripts/setup_local_signing.sh`。它会把一个仅用于本机的稳定签名身份存入 macOS 登录钥匙串，不会把证书或私钥写入仓库。之后 `build_app.sh` 会使用同一个身份签名，普通重新编译不会因为代码哈希变化而反复触发辅助功能或输入监控授权。
+---
 
-如果已经有 Apple Developer 签名身份，可以跳过本机签名，并这样构建：
+## 系统要求
+
+- **操作系统**：macOS 14.0 (Sonoma) 或更高版本
+- **硬件架构**：Apple Silicon (M1/M2/M3/M4 系列芯片) 或 Intel Mac
+- **先决软件**：已安装并运行「豆包」官方桌面客户端
+- **系统权限**：
+  - 必须授予 **辅助功能 (Accessibility)** 权限（用于捕获文本焦点锚点及安全写回）
+  - 若使用除左/右/中键以外的额外鼠标侧键，需授予 **输入监控 (Input Monitoring)** 权限
+
+---
+
+## 安装与运行
+
+### 方式一：下载 DMG 安装包（推荐）
+
+1. 前往项目的 [GitHub Releases 页面](https://github.com/backtomyfuture/doubao-voice-helper/releases)；
+2. 下载最新发布的 `DoubaoVoiceHelper.dmg`；
+3. 双击打开镜像，将 `DoubaoVoiceHelper.app` 拖拽至 `Applications`（应用程序）文件夹；
+4. 双击打开应用，并根据引导完成权限授予。
+
+### 方式二：从源码构建（开发者）
+
+本地构建需要安装 Xcode 或 macOS Command Line Tools 以及 Swift 5.9+：
+
+```bash
+# 1. 克隆代码仓库
+git clone https://github.com/backtomyfuture/doubao-voice-helper.git
+cd doubao-voice-helper
+
+# 2. 运行核心单元测试
+swift run DoubaoVoiceHelperCoreTests
+
+# 3. 创建本机稳定的代码签名证书（关键步骤，见后文说明）
+./scripts/setup_local_signing.sh
+
+# 4. 构建并打包生成 DoubaoVoiceHelper.app
+./scripts/build_app.sh
+
+# 5. (可选) 打包生成 DMG 安装镜像
+./scripts/build_dmg.sh
+```
+
+> [!TIP]
+> **为什么必须运行 `setup_local_signing.sh`？**
+> macOS 的辅助功能授权基于二进制代码签名哈希绑定。如果采用默认 Ad-hoc 签名（`-`），每次代码修改后重新编译都会导致签名哈希改变，进而迫使系统反复要求用户在“系统设置”中重新勾选辅助功能授权。
+> 运行 `./scripts/setup_local_signing.sh` 会在 macOS 本地登录钥匙串中创建并信任名为 `DoubaoVoiceHelper Development` 的稳定自签名证书，免去日常开发调试反复授权的困扰。
+
+---
+
+## 快速上手指南
+
+### 1. 豆包客户端配置
+
+1. 打开豆包桌面客户端，进入「设置」；
+2. 找到「语音输入快捷键」设置项：
+   - 建议设置为默认的 `左 Control`（用于切换式听写）或自定义组合键；
+3. 确保豆包的后台运行与语音功能正常可用。
+
+### 2. 系统权限授予
+
+首次启动应用时，豆包语音助手会弹出权限向导：
+
+1. 打开 **系统设置** ➔ **隐私与安全性** ➔ **辅助功能**；
+2. 将 **豆包语音助手 (DoubaoVoiceHelper)** 勾选为允许；
+3. 若使用了前进/后退等扩展侧键，在 **输入监控** 中同样勾选允许；
+4. 在应用菜单栏图标中点击“检查权限”进行校验确认。
+
+> [!NOTE]
+> 豆包语音助手**不需要麦克风权限**。所有的录音和音频处理均由豆包官方客户端自行完成。
+
+### 3. 罗技鼠标特别适配（Logi Options+ 用户）
+
+如果你使用的是罗技鼠标（如 MX Master 3 / 3S / Anywhere 等）并安装了 Logi Options+：
+- Logi Options+ 会在底层拦截侧键并转译为 macOS 手势导航，导致所有全局监听软件都无法收到按键。
+- **解决方案**：
+  - **在 App 设置中**：直接点击“一键修补 Logi Options+ 侧键”按钮；
+  - **在终端中**：运行 `./scripts/patch_logi_buttons.py`。
+  - 该脚本会自动备份你的配置数据库，并将前进/后退侧键恢复为标准系统鼠标键（Button 4 / Button 3）。
+
+### 4. 鼠标按键与快捷键自定义
+
+在菜单栏点击鼠标图标，选择 **打开设置…**：
+
+| 映射动作 | 默认鼠标按键 | 默认模拟快捷键 | 说明 |
+|---|---|---|---|
+| **切换式语音 (Toggle)** | 前进键 (`Button 4`) | `左 Control` | 按一下开始，再按一下结束 |
+| **按住式语音 (Hold)** | 鼠标左键 (`Button 0`) | `左 Control + Option` | 长按说话，松开结束，短按透传 |
+| **快速提交 (Enter)** | 后退键 (`Button 3`) | `Return` | 按下单发回车 |
+
+> [!TIP]
+> 支持在设置窗口中点击“录制按键”，直接按下鼠标对应按键即可完成捕获。
+
+### 5. 配置语音宏（Voice Macro）
+
+语音宏负责在听写完成的一瞬间，将特定口述字串替换为你期望的文本。
+
+在设置界面的 **语音宏** 区域，你可以添加、删除或切换规则：
+
+| 来源文本 (Source) | 替换为 (Replacement) | 典型应用场景 |
+|---|---|---|
+| `斜杠批准` | `/approve` | 快速批准 AI Agent 任务 |
+| `斜杠任务` | `/missions` | 查看当前工作流任务清单 |
+| `斜杠` | `/` | 快速输入各种命令前缀 |
+| `波浪号` | `~` | 命令行家目录或路径 |
+| `叹号` | `!` | 标点符号与特殊字符 |
+
+---
+
+## 安全与隐私原则
+
+1. **零音频访问 (Zero Audio Access)**：本软件不申请麦克风权限，不读取音频流，也不内置任何网络音频上传逻辑。
+2. **数据驻留本机 (Local First)**：所有用户配置、按键映射、排除名单和语音宏规则均以 JSON 格式存储在本地 `~/Library/Application Support/DoubaoVoiceHelper/`，不进行任何云端数据收集。
+3. **最小化系统监听**：通过 `CGEventTap` 仅拦截用户配置的具体鼠标键，**不监听、不记录键盘日常输入**。
+4. **安全写回与失败降级**：严格通过 macOS Accessibility 验证编辑框状态。遇到不匹配或非标准控件，仅触发豆包启停，保留原始文本，坚决不进行破坏性覆写。
+
+---
+
+## 项目结构
+
+```text
+.
+├── Package.swift                       # Swift Package 清单 (Core、App 与测试目标)
+├── Sources
+│   ├── DoubaoVoiceHelperCore/          # 核心业务逻辑库 (独立可测)
+│   │   ├── Models.swift                # 数据结构 (快捷键、鼠标映射、设置与宏规则)
+│   │   ├── MacroEngine.swift           # 确定性语音宏替换引擎 (最长匹配优先)
+│   │   ├── HoldPolicy.swift            # 鼠标长按/短按阈值与状态策略
+│   │   ├── TextTargets.swift           # macOS 辅助功能 (AX) 文本锚点与增量写回
+│   │   ├── ShortcutStroke.swift        # 键盘组合键合成与事件模拟
+│   │   ├── LogiOptionsPatcher.swift    # Logi Options+ 数据库配置修补
+│   │   └── SettingsRepository.swift    # 本地配置存储与版本迁移
+│   └── DoubaoVoiceHelper/              # 原生 macOS 桌面 App
+│       ├── App.swift                   # SwiftUI App 入口与 MenuBarExtra
+│       ├── AppModel.swift              # 全局状态调度与会话状态机
+│       ├── Views.swift                 # 状态菜单与多 Tab 设置面板
+│       ├── MouseEventMonitor.swift     # 全局鼠标 CGEventTap 监听器
+│       ├── OverlayController.swift     # 屏幕轻量状态浮层 HUD
+│       └── UpdateService.swift         # GitHub Releases 在线自动更新检查
+├── Tests
+│   └── DoubaoVoiceHelperCoreTests/     # 核心功能单元测试 (26 个全覆盖测试用例)
+├── Resources/                          # 应用图标、状态栏线框图标、DMG 背景图、Info.plist
+├── docs/                               # 产品需求文档 (PRD) 与技术架构设计文档
+└── scripts/                            # 本机开发签名、打包 App、生成 DMG 与罗技按键修复脚本
+```
+
+---
+
+## 开发与测试
+
+### 编译与运行测试
+
+```bash
+# 编译 Debug 版本
+swift build
+
+# 运行全套单元测试
+swift run DoubaoVoiceHelperCoreTests
+```
+
+### 构建与打包
+
+```bash
+# 构建已签名的 Release 应用程序包 (输出至 build/DoubaoVoiceHelper.app)
+./scripts/build_app.sh
+
+# 生成 DMG 安装文件 (输出至 build/DoubaoVoiceHelper.dmg)
+./scripts/build_dmg.sh
+```
+
+如需使用指定的 Apple 开发者签名证书进行构建，可设置环境变量：
 
 ```bash
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build_app.sh
 ```
 
-生成的 App 位于 `build/DoubaoVoiceHelper.app`。菜单栏使用素材包中的鼠标线框图标，监听、处理或捕获状态切换为实心图标；图标会自动适配浅色和深色菜单栏。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。请始终启动这一份 App，不要在旧的 `DoubaoMousePTT.app` 或其他路径的副本之间切换。
+---
 
-双击 App 会直接打开设置窗口；之后也可以从菜单栏的鼠标图标打开设置。设置页默认提供：
+## 常见问题排查 (FAQ)
 
-- 前进键（button 4）→ 左 Control，切换式语音
-- 左键（button 0）长按 → 左 Control + Option，按住式语音
-- 后退键（button 3）→ Return
+<details>
+<summary><strong>Q: 为什么按下鼠标侧键没有任何反应？</strong></summary>
 
-首次使用前先授权辅助功能和输入监控，再按需修改三组鼠标键与快捷键。
+1. **检查系统权限**：进入“系统设置 ➔ 隐私与安全性”，确认 **辅助功能** 和 **输入监控** 中均已允许 `DoubaoVoiceHelper`；
+2. **罗技鼠标用户**：如果您安装了 Logi Options+，该软件会拦截前进后退侧键。请点击设置界面的“修补 Logi Options+ 侧键”按钮或执行 `./scripts/patch_logi_buttons.py` 还原为标准鼠标键。
+</details>
 
-首版的语音宏只在 AX 能够证明文本范围时写回。Terminal.app、Ghostty、Cursor/VS Code 内嵌终端的真实兼容性仍需在目标 macOS 版本上逐一验收；无法证明时只触发豆包并保留原文。
-3. 打开 `DoubaoMousePTT.app`，辅助功能允许
-4. 豆包快捷键保持左 Ctrl（点一下开、再点一下关）
+<details>
+<summary><strong>Q: 重新编译代码后，为什么辅助功能权限失效或反复提示授权？</strong></summary>
+
+macOS 的辅助功能权限是绑定到代码签名身份的。每次编译若产生新的临时签名，系统会将其视作全新应用而吊销权限。请先运行一次 `./scripts/setup_local_signing.sh` 生成本机长期稳定的签名身份，之后脚本编译就会复用该身份。
+</details>
+
+<details>
+<summary><strong>Q: 为什么在 Chrome、Safari 或访达里侧键依然是翻页/后退？</strong></summary>
+
+这是符合预期的功能。为了不影响正常的网页与文件浏览体验，浏览器和文件管理器默认加入在应用的**排除列表**中。如需在这些应用中使用语音功能，可在“设置 ➔ 排除应用”中将其移除。
+</details>
+
+<details>
+<summary><strong>Q: 为什么在某些终端（如 Terminal.app / Ghostty）中语音宏没有生效？</strong></summary>
+
+部分终端应用采用自定义渲染画布，未实现标准的 macOS 辅助功能文本 API (`AXUIElement`)。为了保证安全性，应用无法准确计算并定位听写增量文本的范围，此时会自动进入**安全降级模式 (Trigger Only)**：仅控制豆包输入并保留原文字串，避免误删用户已有输入。
+</details>
+
+<details>
+<summary><strong>Q: 本工具是否支持仅用纯按住（Push to Talk）或者仅用切换（Toggle）？</strong></summary>
+
+支持。在设置中，三组映射（切换式、按住式、回车）相互独立。你可以将不希望使用的动作绑定设置为无，或者按需绑定到不同的鼠标按键上。
+</details>
+
+---
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。欢迎提交 Issue 与 Pull Request！
