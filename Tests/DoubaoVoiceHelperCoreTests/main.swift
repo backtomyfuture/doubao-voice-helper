@@ -741,12 +741,21 @@ private func testSchemaNineMacroRulesMigration() throws {
     )
 }
 
+func testAppVersionComparison() throws {
+    try expect(AppVersion("0.1.0") < AppVersion("0.1.1"), "0.1.0 < 0.1.1")
+    try expect(AppVersion("0.1.0") < AppVersion("v0.2.0"), "0.1.0 < v0.2.0")
+    try expect(AppVersion("v1.0.0") > AppVersion("0.9.9"), "v1.0.0 > 0.9.9")
+    try expectEqual(AppVersion("v0.1.0"), AppVersion("0.1.0"), "v0.1.0 == 0.1.0")
+    try expect(!(AppVersion("0.1.0") < AppVersion("0.1.0")), "same version not less")
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("longest rule wins", testLongestRuleWins),
     ("non-recursive replacement", testReplacementIsNotRecursive),
     ("unicode and multiple matches", testUnicodeAndMultipleMatches),
     ("disabled rules", testDisabledRulesAreIgnored),
     ("rule validation", testRuleValidation),
+    ("app version comparison", testAppVersionComparison),
     ("hold shortcut presses option then control", testHoldShortcutPressesOptionThenControl),
     ("right modifier keys are preserved", testRightModifierKeysArePreserved),
     ("left command option device bits", testLeftCommandOptionDeviceBits),

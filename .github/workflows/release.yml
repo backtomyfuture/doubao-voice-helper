@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Version Tag (e.g. v0.1.1)'
+        required: true
+        default: 'v0.1.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release macOS App
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          # Strip leading v for CFBundleShortVersionString
+          RAW_VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$RAW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version $RAW_VERSION ($TAG)..."
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RAW_VERSION" Resources/Info.plist
+
+      - name: Run Unit Tests
+        run: |
+          swift run DoubaoVoiceHelperCoreTests
+
+      - name: Build Application (.app)
+        env:
+          CI: "true"
+          CODESIGN_IDENTITY: "-"
+          CONFIGURATION: "release"
+        run: |
+          ./scripts/build_app.sh
+
+      - name: Package Distribution ZIP
+        run: |
+          ditto -c -k --keepParent "build/DoubaoVoiceHelper.app" "build/DoubaoVoiceHelper.zip"
+
+      - name: Package Distribution DMG
+        run: |
+          ./scripts/build_dmg.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 豆包语音助手 ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            build/DoubaoVoiceHelper.zip
+            build/DoubaoVoiceHelper.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

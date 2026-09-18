@@ -28,17 +28,18 @@ fi
 
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     SIGNING_IDENTITY="$CODESIGN_IDENTITY"
+elif [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
+    SIGNING_IDENTITY="-"
 else
     SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
     if ! security find-identity -v -p codesigning 2>/dev/null \
         | grep -Fq "\"$SIGNING_IDENTITY\""; then
-        echo "No stable signing identity named \"$SIGNING_IDENTITY\" was found." >&2
-        echo "Run ./scripts/setup_local_signing.sh once, or set CODESIGN_IDENTITY." >&2
-        exit 1
+        echo "No stable signing identity named \"$SIGNING_IDENTITY\" was found. Falling back to ad-hoc signing (-)." >&2
+        SIGNING_IDENTITY="-"
     fi
 fi
 
-codesign --force --sign "$SIGNING_IDENTITY" "$APP_DIR"
+codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
 
 echo "Built $APP_DIR"
 echo "Signed with $SIGNING_IDENTITY"

@@ -41,6 +41,10 @@ struct MenuBarView: View {
                     model.requestInputMonitoringPermission()
                 }
             }
+            Button("检查更新…") {
+                openSettings()
+                model.checkForUpdates()
+            }
 
             Divider()
 
@@ -236,6 +240,137 @@ struct SettingsView: View {
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            }
+
+            Section("软件与更新") {
+                HStack {
+                    Text("当前版本")
+                    Spacer()
+                    Text("v\(model.appVersionString)")
+                        .foregroundStyle(.secondary)
+                        .font(.system(.body, design: .monospaced))
+                }
+
+                switch model.updateState {
+                case .idle:
+                    Button {
+                        model.checkForUpdates()
+                    } label: {
+                        Label("检查更新", systemImage: "arrow.clockwise")
+                    }
+
+                case .checking:
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在查询 GitHub 最新发布版本…")
+                            .foregroundStyle(.secondary)
+                    }
+
+                case .upToDate(let version):
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("当前已是最新版本 (v\(version))")
+                        Spacer()
+                        Button("重新检查") {
+                            model.checkForUpdates()
+                        }
+                    }
+
+                case .noReleasesFound(let current):
+                    HStack {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.blue)
+                        Text("暂无公开发布版本 (当前版本: v\(current))")
+                        Spacer()
+                        Button("重新检查") {
+                            model.checkForUpdates()
+                        }
+                    }
+
+                case .updateAvailable(let newVersion, let notes, let downloadURL, let releasePageURL):
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundStyle(.blue)
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("发现新版本 \(newVersion)")
+                                    .font(.headline)
+                                Text("可直接一键更新替换本地应用并自动重启")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if !notes.isEmpty {
+                            Text(notes)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.secondary.opacity(0.08))
+                                .cornerRadius(6)
+                        }
+
+                        HStack(spacing: 12) {
+                            if downloadURL != nil {
+                                Button {
+                                    model.downloadAndInstallUpdate()
+                                } label: {
+                                    Label("一键更新并重启", systemImage: "arrow.triangle.2.circlepath")
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+
+                            Button("在 GitHub 查看发行注记") {
+                                NSWorkspace.shared.open(releasePageURL)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+
+                case .downloading(let progress):
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("正在下载新版本…")
+                            Spacer()
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        ProgressView(value: progress)
+                    }
+                    .padding(.vertical, 4)
+
+                case .installing:
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在解压安装，即将自动重启应用…")
+                    }
+                    .padding(.vertical, 4)
+
+                case .failed(let error):
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("检查更新失败: \(error)")
+                                .font(.caption)
+                        }
+                        HStack(spacing: 12) {
+                            Button("重试") {
+                                model.checkForUpdates()
+                            }
+                            Button("前往 GitHub 手动下载") {
+                                model.openReleasesPage()
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
             }
 
             Section("说明") {

@@ -121,6 +121,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var captureRole: MouseBindingRole?
     @Published var onboardingPhase: OnboardingPhase
     @Published private(set) var lastHeardButton: Int64?
+    @Published private(set) var updateState: UpdateState = .idle
 
     let repository: SettingsRepository
     let permissionService: PermissionService
@@ -129,6 +130,7 @@ final class AppModel: ObservableObject {
     let loginItemService: LoginItemService
     let overlayController: StatusOverlayController
     let selectionRestorer: AXSelectionRestorer
+    let updateService = UpdateService()
 
     private let diagnostics = Diagnostics()
     private lazy var mouseMonitor = MouseEventMonitor(
@@ -206,9 +208,41 @@ final class AppModel: ObservableObject {
         refreshPermissions()
         syncMonitorConfiguration()
         startMonitoringIfPossible()
+        updateService.$state
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$updateState)
+
         if settings.launchAtLogin, settings.onboardingCompleted {
             try? loginItemService.setEnabled(true)
         }
+    }
+
+    var appVersionString: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+    }
+
+    func checkForUpdates() {
+        Task {
+            await updateService.checkForUpdates(currentVersion: appVersionString)
+        }
+    }
+
+    func downloadAndInstallUpdate() {
+        guard case .updateAvailable(_, _, let downloadURL, _) = updateState,
+              let downloadURL
+        else {
+            return
+        }
+        Task {
+            await updateService.downloadAndInstall(
+                downloadURL: downloadURL,
+                currentAppURL: Bundle.main.bundleURL
+            )
+        }
+    }
+
+    func openReleasesPage() {
+        NSWorkspace.shared.open(AppSettings.gitHubReleasesPageURL)
     }
 
     var statusTitle: String {

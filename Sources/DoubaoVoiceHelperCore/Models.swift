@@ -153,9 +153,42 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct AppVersion: Comparable, Equatable, CustomStringConvertible, Sendable {
+    public let raw: String
+    public let major: Int
+    public let minor: Int
+    public let patch: Int
+
+    public init(_ string: String) {
+        self.raw = string
+        let cleaned = string.trimmingCharacters(in: CharacterSet(charactersIn: "vV \t\n\r"))
+        let parts = cleaned.split(separator: ".").compactMap { Int($0) }
+        self.major = parts.indices.contains(0) ? parts[0] : 0
+        self.minor = parts.indices.contains(1) ? parts[1] : 0
+        self.patch = parts.indices.contains(2) ? parts[2] : 0
+    }
+
+    public var description: String {
+        raw.hasPrefix("v") ? raw : "v\(raw)"
+    }
+
+    public static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
+        if lhs.major != rhs.major { return lhs.major < rhs.major }
+        if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+        return lhs.patch < rhs.patch
+    }
+
+    public static func == (lhs: AppVersion, rhs: AppVersion) -> Bool {
+        lhs.major == rhs.major && lhs.minor == rhs.minor && lhs.patch == rhs.patch
+    }
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 9
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
+    public static let gitHubRepository = "backtomyfuture/doubao-voice-helper"
+    public static let gitHubReleasesAPIURL = URL(string: "https://api.github.com/repos/backtomyfuture/doubao-voice-helper/releases/latest")!
+    public static let gitHubReleasesPageURL = URL(string: "https://github.com/backtomyfuture/doubao-voice-helper/releases")!
     public static let doubaoClientBundleIDs = [
         "com.bot.pc.doubao",
         "com.work.pc.doubao",
