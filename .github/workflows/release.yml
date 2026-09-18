@@ -70,7 +70,7 @@ jobs:
             -T /usr/bin/security
 
           security find-certificate -c "DoubaoVoiceHelper Development" -p "$KEYCHAIN_PATH" > "$RUNNER_TEMP/cert.pem"
-          security add-trusted-cert -d -r trustRoot -p codeSign -k "$KEYCHAIN_PATH" "$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign "$RUNNER_TEMP/cert.pem"
           rm -f "$RUNNER_TEMP/cert.pem"
 
           security set-key-partition-list \
