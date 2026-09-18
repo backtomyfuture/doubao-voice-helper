@@ -47,6 +47,28 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
         physicalKeyCodes: [59]
     )
 
+    public static let leftControl = doubaoDefault
+
+    public static let leftCommandLeftControl = KeyboardShortcut(
+        keyCode: 59,
+        modifiers: [.command, .control],
+        physicalKeyCodes: [55, 59]
+    )
+
+    public static let leftControlOption = KeyboardShortcut(
+        keyCode: 59,
+        modifiers: [.control, .option],
+        physicalKeyCodes: [59, 58]
+    )
+
+    public static let rightControl = KeyboardShortcut(
+        keyCode: 62,
+        modifiers: [.control],
+        physicalKeyCodes: [62]
+    )
+
+    public static let returnKey = KeyboardShortcut(keyCode: 36)
+
     public var displayName: String {
         let codes = ShortcutStroke.resolvedKeyCodes(for: self)
         if codes.isEmpty {

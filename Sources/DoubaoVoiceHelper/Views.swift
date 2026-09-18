@@ -500,9 +500,35 @@ private struct MouseMappingRow: View {
                     ),
                     isRecording: $isRecordingShortcut
                 )
+                .frame(minWidth: 140, minHeight: 26, maxHeight: 26)
+
                 Button(isRecordingShortcut ? "完成" : "修改") {
                     isRecordingShortcut.toggle()
                 }
+
+                Menu {
+                    Button("左 Control (豆包默认)") {
+                        model.setShortcut(AppKeyboardShortcut.leftControl, for: role)
+                    }
+                    Button("左 Command + 左 Control") {
+                        model.setShortcut(AppKeyboardShortcut.leftCommandLeftControl, for: role)
+                    }
+                    Button("左 Control + Option") {
+                        model.setShortcut(AppKeyboardShortcut.leftControlOption, for: role)
+                    }
+                    Button("右 Control") {
+                        model.setShortcut(AppKeyboardShortcut.rightControl, for: role)
+                    }
+                    Divider()
+                    Button("Return (回车)") {
+                        model.setShortcut(AppKeyboardShortcut.returnKey, for: role)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .help("选择常用快捷键预设")
             }
         }
         .padding(.vertical, 3)
@@ -558,11 +584,15 @@ private struct ShortcutRecorder: NSViewRepresentable {
         view.onCancel = {
             context.coordinator.parent.isRecording = false
         }
+        view.onRecordingChanged = { recording in
+            context.coordinator.parent.isRecording = recording
+        }
         view.isRecording = isRecording
         return view
     }
 
     func updateNSView(_ nsView: ShortcutRecorderView, context: Context) {
+        context.coordinator.parent = self
         nsView.shortcut = shortcut
         nsView.setRecording(isRecording)
         nsView.needsDisplay = true
@@ -581,26 +611,74 @@ private final class ShortcutRecorderView: NSView {
     var shortcut = AppKeyboardShortcut.doubaoDefault
     var onShortcut: ((AppKeyboardShortcut) -> Void)?
     var onCancel: (() -> Void)?
+    var onRecordingChanged: ((Bool) -> Void)?
     private var activeModifierShortcut: AppKeyboardShortcut?
     private var capturedKeyCodes: [UInt16] = []
+    private var localMonitor: Any?
     var isRecording = false
 
     override var acceptsFirstResponder: Bool {
         true
     }
 
-    override func mouseDown(with event: NSEvent) {
-        if isRecording {
-            window?.makeFirstResponder(self)
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 140, height: 26)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didResignKeyNotification,
+            object: nil
+        )
+        if let window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidResignKey),
+                name: NSWindow.didResignKeyNotification,
+                object: window
+            )
         }
+    }
+
+    deinit {
+        stopLocalMonitor()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func windowDidResignKey() {
+        guard isRecording else { return }
+        // 当窗口失去焦点（例如按下快捷键直接触发了豆包官方悬浮窗抢占焦点），
+        // 如果已经捕获到了按键，自动确认为用户要设置的快捷键，避免因失焦漏掉松开事件而录制失败
+        if let activeModifierShortcut {
+            shortcut = activeModifierShortcut
+            onShortcut?(shortcut)
+            self.activeModifierShortcut = nil
+            capturedKeyCodes.removeAll()
+            stopLocalMonitor()
+            needsDisplay = true
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onRecordingChanged?(!isRecording)
     }
 
     func setRecording(_ recording: Bool) {
         guard recording != isRecording else { return }
+        if !recording {
+            if let activeModifierShortcut {
+                shortcut = activeModifierShortcut
+                onShortcut?(shortcut)
+            }
+            stopLocalMonitor()
+        }
         isRecording = recording
         activeModifierShortcut = nil
         capturedKeyCodes.removeAll()
         if recording {
+            startLocalMonitor()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.window?.makeFirstResponder(self)
@@ -611,12 +689,45 @@ private final class ShortcutRecorderView: NSView {
         needsDisplay = true
     }
 
+    private func startLocalMonitor() {
+        stopLocalMonitor()
+        localMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak self] event in
+            guard let self, self.isRecording else { return event }
+            if event.type == .keyDown {
+                self.handleKeyDown(with: event)
+                return nil
+            } else if event.type == .flagsChanged {
+                self.handleFlagsChanged(with: event)
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func stopLocalMonitor() {
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+    }
+
     override func keyDown(with event: NSEvent) {
+        handleKeyDown(with: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        handleFlagsChanged(with: event)
+    }
+
+    private func handleKeyDown(with event: NSEvent) {
         guard isRecording else { return }
         if event.keyCode == 53 {
             isRecording = false
             activeModifierShortcut = nil
             capturedKeyCodes.removeAll()
+            stopLocalMonitor()
             onCancel?()
             needsDisplay = true
             return
@@ -628,11 +739,12 @@ private final class ShortcutRecorderView: NSView {
         )
         activeModifierShortcut = nil
         capturedKeyCodes.removeAll()
+        stopLocalMonitor()
         onShortcut?(shortcut)
         needsDisplay = true
     }
 
-    override func flagsChanged(with event: NSEvent) {
+    private func handleFlagsChanged(with event: NSEvent) {
         guard isRecording else { return }
         let activeModifiers = modifiers(from: event.modifierFlags)
         if activeModifiers.isEmpty {
@@ -642,6 +754,8 @@ private final class ShortcutRecorderView: NSView {
             }
             activeModifierShortcut = nil
             capturedKeyCodes.removeAll()
+            stopLocalMonitor()
+            needsDisplay = true
             return
         }
 
@@ -671,16 +785,38 @@ private final class ShortcutRecorderView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 1, dy: 1)
-        NSColor.controlBackgroundColor.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
-        NSColor.separatorColor.setStroke()
-        NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).stroke()
+        if isRecording {
+            NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            NSColor.controlAccentColor.setStroke()
+            let border = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+            border.lineWidth = 1.5
+            border.stroke()
+        } else {
+            NSColor.controlBackgroundColor.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            NSColor.separatorColor.setStroke()
+            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).stroke()
+        }
 
-        let text = (isRecording ? activeModifierShortcut : nil)?.displayName
-            ?? shortcut.displayName
+        let text: String
+        let textColor: NSColor
+        if isRecording {
+            if let activeModifierShortcut {
+                text = activeModifierShortcut.displayName
+                textColor = .controlAccentColor
+            } else {
+                text = "请按下快捷键…"
+                textColor = .secondaryLabelColor
+            }
+        } else {
+            text = shortcut.displayName
+            textColor = .labelColor
+        }
+
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: textColor,
         ]
         let size = text.size(withAttributes: attributes)
         text.draw(
