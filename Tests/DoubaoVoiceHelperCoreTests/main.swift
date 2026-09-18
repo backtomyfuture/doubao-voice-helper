@@ -749,6 +749,49 @@ func testAppVersionComparison() throws {
     try expect(!(AppVersion("0.1.0") < AppVersion("0.1.0")), "same version not less")
 }
 
+private func testLogiOptionsPatchJson() throws {
+    let mockJson = """
+    {
+      "profile-global": {
+        "assignments": [
+          {
+            "slotId": "mx-anywhere-2s-6b01a_c83",
+            "card": { "name": "BACK" }
+          },
+          {
+            "slotId": "mx-anywhere-2s-6b01a_c86",
+            "card": { "name": "FORWARD" }
+          },
+          {
+            "slotId": "mx-anywhere-2s-6b01a_c82",
+            "card": { "name": "GESTURE" }
+          }
+        ]
+      }
+    }
+    """
+
+    let result = try LogiOptionsPatcher.patchJson(mockJson)
+    try expectEqual(result.count, 2, "patch count")
+    try expectEqual(result.slots, ["mx-anywhere-2s-6b01a_c83", "mx-anywhere-2s-6b01a_c86"], "patched slots")
+
+    guard let patchedData = result.newJson.data(using: .utf8),
+          let root = try? JSONSerialization.jsonObject(with: patchedData) as? [String: Any],
+          let profile = root["profile-global"] as? [String: Any],
+          let assigns = profile["assignments"] as? [[String: Any]] else {
+        throw TestFailure.assertion("Failed to parse patched json")
+    }
+
+    let c83 = assigns.first { $0["slotId"] as? String == "mx-anywhere-2s-6b01a_c83" }
+    let c86 = assigns.first { $0["slotId"] as? String == "mx-anywhere-2s-6b01a_c86" }
+
+    let c83Usage = ((c83?["card"] as? [String: Any])?["macro"] as? [String: Any])?["mouse"] as? [String: Any]
+    let c86Usage = ((c86?["card"] as? [String: Any])?["macro"] as? [String: Any])?["mouse"] as? [String: Any]
+
+    try expectEqual(c83Usage?["hidUsage"] as? Int, 4, "c83 hidUsage 4")
+    try expectEqual(c86Usage?["hidUsage"] as? Int, 5, "c86 hidUsage 5")
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("longest rule wins", testLongestRuleWins),
     ("non-recursive replacement", testReplacementIsNotRecursive),
@@ -775,6 +818,7 @@ let tests: [(String, () throws -> Void)] = [
     ("navigation exclude lists", testNavigationExcludeDoesNotIncludeDoubao),
     ("schema eight strips doubao", testSchemaEightStripsDoubaoExclude),
     ("schema nine macro rules migration", testSchemaNineMacroRulesMigration),
+    ("logi options patch json", testLogiOptionsPatchJson),
 ]
 
 var failures = 0

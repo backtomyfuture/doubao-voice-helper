@@ -29,6 +29,7 @@
 | `scripts/build_app.sh` | 构建并生成签名的 `.app` |
 | `scripts/build_dmg.sh` | 使用 DMG 背景生成安装镜像（需要 `create-dmg`） |
 | `scripts/setup_local_signing.sh` | 一次性创建本机稳定开发签名 |
+| `scripts/patch_logi_buttons.py` | 一键修复 Logi Options+ 侧键为系统原生鼠标键 |
 
 ### 开发
 

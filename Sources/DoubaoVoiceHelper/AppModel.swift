@@ -122,6 +122,9 @@ final class AppModel: ObservableObject {
     @Published var onboardingPhase: OnboardingPhase
     @Published private(set) var lastHeardButton: Int64?
     @Published private(set) var updateState: UpdateState = .idle
+    @Published var logiOptionsInstalled: Bool = LogiOptionsPatcher.shared.isInstalled
+    @Published var logiOptionsNeedsFix: Bool = false
+    @Published var logiOptionsPatching: Bool = false
 
     let repository: SettingsRepository
     let permissionService: PermissionService
@@ -264,11 +267,44 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         permissionSnapshot = permissionService.snapshot()
+        checkLogiOptionsStatus()
         if !hasRequiredPermissions, activeSession == nil
         {
             status = .permission
         } else if status == .permission {
             status = .ready
+        }
+    }
+
+    func checkLogiOptionsStatus() {
+        logiOptionsInstalled = LogiOptionsPatcher.shared.isInstalled
+        if logiOptionsInstalled {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let needs = LogiOptionsPatcher.shared.needsFix()
+                DispatchQueue.main.async {
+                    self?.logiOptionsNeedsFix = needs
+                }
+            }
+        }
+    }
+
+    func patchLogiOptions() {
+        logiOptionsPatching = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try LogiOptionsPatcher.shared.patch()
+                DispatchQueue.main.async {
+                    self.logiOptionsPatching = false
+                    self.logiOptionsNeedsFix = false
+                    self.showNotice("成功修复 \(result.count) 处罗技侧键配置为原生按键！")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.logiOptionsPatching = false
+                    self.showNotice("修复失败：\(error.localizedDescription)")
+                }
+            }
         }
     }
 

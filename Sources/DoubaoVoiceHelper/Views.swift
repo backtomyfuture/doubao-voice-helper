@@ -104,6 +104,50 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if model.logiOptionsInstalled {
+                Section("罗技鼠标适配 (Logi Options+)") {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: model.logiOptionsNeedsFix ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(model.logiOptionsNeedsFix ? .orange : .green)
+                            .font(.title2)
+                            .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(model.logiOptionsNeedsFix ? "检测到侧键被罗技手势接管" : "罗技侧键已配置为原生按键")
+                                .font(.headline)
+                            Text(
+                                model.logiOptionsNeedsFix
+                                    ? "Logi Options+ 默认将侧键设为手势导航，导致系统与本助手无法收到鼠标事件。点击下方按钮即可一键修复为原生按键（Button 4/3），无需关闭罗技软件。"
+                                    : "已将所有罗技鼠标前进/后退键修复为原生鼠标按键，可直接录制与正常使用。"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            Button {
+                                model.patchLogiOptions()
+                            } label: {
+                                if model.logiOptionsPatching {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("正在修复…")
+                                    }
+                                } else {
+                                    Label(
+                                        model.logiOptionsNeedsFix ? "一键修复罗技侧键为原生按键" : "重新扫描并修复罗技侧键",
+                                        systemImage: "wrench.and.screwdriver"
+                                    )
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.logiOptionsPatching)
+                            .padding(.top, 2)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
             Section("语音宏（特殊文字替换）") {
                 Text("听写结束时，将识别到的特定文字自动替换为目标符号或命令。长词优先匹配。")
                     .font(.footnote)
