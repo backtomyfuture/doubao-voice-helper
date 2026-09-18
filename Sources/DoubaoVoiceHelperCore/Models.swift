@@ -225,8 +225,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             keyCode: 58,
             modifiers: [.command, .option]
         )
-        if decodedSchemaVersion == 3,
-           decodedHoldShortcut == brokenSchemaThreeHoldShortcut
+        if decodedHoldShortcut == brokenSchemaThreeHoldShortcut
         {
             decodedHoldShortcut = AppSettings.defaultHoldShortcut
         }
@@ -239,8 +238,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             keyCode: 55,
             modifiers: [.command]
         )
-        if decodedSchemaVersion <= 5,
-           decodedHoldShortcut == brokenSchemaFiveHoldShortcut
+        if decodedHoldShortcut == brokenSchemaFiveHoldShortcut
         {
             decodedHoldShortcut = AppSettings.defaultHoldShortcut
         }
@@ -263,6 +261,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
         }
         if !decodedExcludedBundleIDs.contains(AppSettings.bundleIdentifier) {
             decodedExcludedBundleIDs.append(AppSettings.bundleIdentifier)
+        }
+        decodedExcludedBundleIDs.removeAll {
+            $0 == "com.stablyai.orca" ||
+                $0 == "com.citrolabs.ego" ||
+                $0 == "com.citrolabs.ego.lite"
         }
         excludedBundleIDs = decodedExcludedBundleIDs
         macroRules = try container.decodeIfPresent(
@@ -330,9 +333,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
         "com.microsoft.edgemac",
         "org.mozilla.firefox",
         "company.thebrowser.Browser",
-        "com.stablyai.orca",
-        "com.citrolabs.ego",
-        "com.citrolabs.ego.lite",
         "com.brave.Browser",
         "com.operasoftware.Opera",
         "com.vivaldi.Vivaldi",

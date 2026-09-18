@@ -23,7 +23,8 @@
 | `Sources/DoubaoVoiceHelperCore/` | 规则引擎、设置、权限、快捷键和 AX 文本适配器 |
 | `Sources/DoubaoVoiceHelper/` | 菜单栏 App、事件监听、设置窗口和状态浮层 |
 | `Tests/` | 语音宏与设置持久化测试 |
-| `scripts/build_app.sh` | 构建并生成可手工分发的 `.app` |
+| `scripts/build_app.sh` | 构建并生成签名的 `.app` |
+| `scripts/setup_local_signing.sh` | 一次性创建本机稳定开发签名 |
 
 ### 开发
 
@@ -32,10 +33,19 @@
 ```bash
 swift build -c release
 swift run DoubaoVoiceHelperCoreTests
+./scripts/setup_local_signing.sh
 ./scripts/build_app.sh
 ```
 
-生成的 App 位于 `build/DoubaoVoiceHelper.app`。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。
+首次在本机开发时运行一次 `./scripts/setup_local_signing.sh`。它会把一个仅用于本机的稳定签名身份存入 macOS 登录钥匙串，不会把证书或私钥写入仓库。之后 `build_app.sh` 会使用同一个身份签名，普通重新编译不会因为代码哈希变化而反复触发辅助功能或输入监控授权。
+
+如果已经有 Apple Developer 签名身份，可以跳过本机签名，并这样构建：
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build_app.sh
+```
+
+生成的 App 位于 `build/DoubaoVoiceHelper.app`。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。请始终启动这一份 App，不要在旧的 `DoubaoMousePTT.app` 或其他路径的副本之间切换。
 
 双击 App 会直接打开设置窗口；之后也可以从菜单栏的麦克风图标打开设置。设置页默认提供：
 
