@@ -65,91 +65,45 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
     }
 
     public func keyDown(_ shortcut: KeyboardShortcut) throws {
-        let source = try eventSource()
-        if isModifierKey(shortcut.keyCode) {
-            try post(
-                source: source,
-                keyCode: shortcut.keyCode,
-                keyDown: true,
-                flags: flags(for: shortcut)
-            )
-            return
-        }
-
-        var activeFlags: CGEventFlags = []
-        for modifier in modifierOrder where shortcut.modifiers.contains(modifier) {
-            activeFlags.formUnion(flags(for: modifier))
-            try post(
-                source: source,
-                keyCode: keyCode(for: modifier),
-                keyDown: true,
-                flags: activeFlags
-            )
-        }
-
-        if !isModifierKey(shortcut.keyCode) {
-            try post(
-                source: source,
-                keyCode: shortcut.keyCode,
-                keyDown: true,
-                flags: flags(for: shortcut)
-            )
-        }
+        try post(ShortcutStroke.keyDownEvents(for: shortcut))
     }
 
     public func keyUp(_ shortcut: KeyboardShortcut) throws {
-        let source = try eventSource()
-        if isModifierKey(shortcut.keyCode) {
-            try post(
-                source: source,
-                keyCode: shortcut.keyCode,
-                keyDown: false,
-                flags: []
-            )
-            return
-        }
-
-        let modifiers = modifierOrder.filter {
-            shortcut.modifiers.contains($0)
-        }
-
-        if !isModifierKey(shortcut.keyCode) {
-            try post(
-                source: source,
-                keyCode: shortcut.keyCode,
-                keyDown: false,
-                flags: flags(for: shortcut)
-            )
-        }
-
-        var activeFlags = flags(for: shortcut)
-        for modifier in modifiers.reversed() {
-            activeFlags.subtract(flags(for: modifier))
-            try post(
-                source: source,
-                keyCode: keyCode(for: modifier),
-                keyDown: false,
-                flags: activeFlags
-            )
-        }
-    }
-
-    private var modifierOrder: [KeyboardModifier] {
-        [.command, .option, .control, .shift, .function]
+        try post(ShortcutStroke.keyUpEvents(for: shortcut))
     }
 
     private func eventSource() throws -> CGEventSource {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ShortcutEmitterError.eventSourceUnavailable
         }
+        source.localEventsSuppressionInterval = 0
+        source.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalKeyboardEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
         return source
+    }
+
+    private func post(_ events: [SynthesizedKeyEvent]) throws {
+        let source = try eventSource()
+        for (index, event) in events.enumerated() {
+            try post(
+                source: source,
+                keyCode: event.keyCode,
+                keyDown: event.keyDown,
+                flagBits: event.flagBits
+            )
+            if index + 1 < events.count {
+                usleep(20_000)
+            }
+        }
     }
 
     private func post(
         source: CGEventSource,
         keyCode: UInt16,
         keyDown: Bool,
-        flags: CGEventFlags
+        flagBits: UInt64
     ) throws {
         guard let event = CGEvent(
             keyboardEventSource: source,
@@ -158,40 +112,12 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
         ) else {
             throw ShortcutEmitterError.keyEventCreationFailed
         }
-        event.flags = flags
+        event.flags = CGEventFlags(rawValue: flagBits)
+        if ShortcutStroke.isModifierKey(keyCode) {
+            event.type = .flagsChanged
+        }
         event.post(tap: .cghidEventTap)
-    }
-
-    private func keyCode(for modifier: KeyboardModifier) -> UInt16 {
-        switch modifier {
-        case .command: return 55
-        case .option: return 58
-        case .control: return 59
-        case .shift: return 56
-        case .function: return 63
-        }
-    }
-
-    private func isModifierKey(_ keyCode: UInt16) -> Bool {
-        [54, 55, 56, 58, 59, 60, 61, 62, 63].contains(keyCode)
-    }
-
-    private func flags(for shortcut: KeyboardShortcut) -> CGEventFlags {
-        var eventFlags: CGEventFlags = []
-        for modifier in modifierOrder where shortcut.modifiers.contains(modifier) {
-            eventFlags.formUnion(flags(for: modifier))
-        }
-        return eventFlags
-    }
-
-    private func flags(for modifier: KeyboardModifier) -> CGEventFlags {
-        switch modifier {
-        case .command: return .maskCommand
-        case .option: return .maskAlternate
-        case .control: return .maskControl
-        case .shift: return .maskShift
-        case .function: return .maskSecondaryFn
-        }
+        event.post(tap: .cgSessionEventTap)
     }
 }
 

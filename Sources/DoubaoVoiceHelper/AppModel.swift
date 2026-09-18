@@ -78,20 +78,34 @@ private final class ActiveSession: @unchecked Sendable {
     let processIdentifier: pid_t
     let cancellation = CancellationToken()
     var phase: Phase = .listening
+    let pressOrigin: CGPoint
+    var cancelArmed = false
+    var replacingSelection = false
 
     init(
         anchor: TextSessionAnchor?,
         role: MouseBindingRole,
         shortcut: KeyboardShortcut,
         bundleIdentifier: String?,
-        processIdentifier: pid_t
+        processIdentifier: pid_t,
+        pressOrigin: CGPoint
     ) {
         self.anchor = anchor
         self.role = role
         self.shortcut = shortcut
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
+        self.pressOrigin = pressOrigin
     }
+}
+
+enum OnboardingPhase: Equatable {
+    case intro
+    case permissions
+    case confirm(MouseBindingRole)
+    case optionsPlus(MouseBindingRole)
+    case loginItem
+    case done
 }
 
 @MainActor
@@ -104,6 +118,8 @@ final class AppModel: ObservableObject {
         inputMonitoringAuthorized: false
     )
     @Published private(set) var captureRole: MouseBindingRole?
+    @Published var onboardingPhase: OnboardingPhase
+    @Published private(set) var lastHeardButton: Int64?
 
     let repository: SettingsRepository
     let permissionService: PermissionService
@@ -111,6 +127,7 @@ final class AppModel: ObservableObject {
     let textAdapter: AXTextAdapter
     let loginItemService: LoginItemService
     let overlayController: StatusOverlayController
+    let selectionRestorer: AXSelectionRestorer
 
     private let diagnostics = Diagnostics()
     private lazy var mouseMonitor = MouseEventMonitor(
@@ -118,10 +135,14 @@ final class AppModel: ObservableObject {
             toggleButton: settings.toggleMouseBinding.button,
             holdButton: settings.holdMouseBinding.button,
             enterButton: settings.enterMouseBinding.button,
-            excludedBundleIDs: settings.excludedBundleIDs,
+            navigationExcludedBundleIDs: settings.excludedBundleIDs,
+            holdExcludedBundleIDs: settings.holdExcludedBundleIDs,
             paused: false,
-            capturing: false
+            capturing: false,
+            wechatHoldPreemptEnabled: settings.wechatHoldPreemptEnabled,
+            swallowEscape: false
         ),
+        selectionRestorer: selectionRestorer,
         callbackHandler: { [weak self] event in
             DispatchQueue.main.async {
                 self?.handle(event)
@@ -130,8 +151,10 @@ final class AppModel: ObservableObject {
     )
     private var activeSession: ActiveSession?
     private var workspaceObserver: NSObjectProtocol?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var monitorStarted = false
     private var captureMode = false
+    private var confirmationRole: MouseBindingRole?
     private var captureTimeout: DispatchWorkItem?
     private var sessionCooldownUntil = Date.distantPast
     private let sessionCooldown: TimeInterval = 0.35
@@ -142,7 +165,8 @@ final class AppModel: ObservableObject {
         shortcutEmitter: ShortcutEmitting = CoreGraphicsShortcutEmitter(),
         textAdapter: AXTextAdapter = AXTextAdapter(),
         loginItemService: LoginItemService = LoginItemService(),
-        overlayController: StatusOverlayController? = nil
+        overlayController: StatusOverlayController? = nil,
+        selectionRestorer: AXSelectionRestorer = AXSelectionRestorer()
     ) {
         self.repository = repository
         self.permissionService = permissionService
@@ -150,8 +174,11 @@ final class AppModel: ObservableObject {
         self.textAdapter = textAdapter
         self.loginItemService = loginItemService
         self.overlayController = overlayController ?? StatusOverlayController()
-        self.settings = repository.load()
-        try? repository.save(self.settings)
+        self.selectionRestorer = selectionRestorer
+        let loaded = repository.load()
+        self.settings = loaded
+        self.onboardingPhase = loaded.onboardingCompleted ? .done : .intro
+        try? repository.save(loaded)
 
         if !permissionService.snapshot().accessibilityTrusted {
             _ = permissionService.requestAccessibility()
@@ -173,11 +200,12 @@ final class AppModel: ObservableObject {
                 self?.handleApplicationActivation(application)
             }
         }
+        observeLifecycle()
 
         refreshPermissions()
         syncMonitorConfiguration()
         startMonitoringIfPossible()
-        if settings.launchAtLogin {
+        if settings.launchAtLogin, settings.onboardingCompleted {
             try? loginItemService.setEnabled(true)
         }
     }
@@ -248,6 +276,12 @@ final class AppModel: ObservableObject {
         persist()
     }
 
+    func setWechatHoldPreemptEnabled(_ enabled: Bool) {
+        settings.wechatHoldPreemptEnabled = enabled
+        syncMonitorConfiguration()
+        persist()
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         settings.launchAtLogin = enabled
         do {
@@ -264,8 +298,7 @@ final class AppModel: ObservableObject {
         case .toggle: return settings.toggleMouseBinding
         case .hold: return settings.holdMouseBinding
         case .enter: return settings.enterMouseBinding
-        case .capture: return MouseBinding()
-        case .unbound: return MouseBinding()
+        case .capture, .unbound, .escape: return MouseBinding()
         }
     }
 
@@ -278,9 +311,7 @@ final class AppModel: ObservableObject {
             settings.holdMouseBinding.button = button
         case .enter:
             settings.enterMouseBinding.button = button
-        case .capture:
-            return
-        case .unbound:
+        case .capture, .unbound, .escape:
             return
         }
         syncMonitorConfiguration()
@@ -292,8 +323,7 @@ final class AppModel: ObservableObject {
         case .toggle: return settings.toggleShortcut
         case .hold: return settings.holdShortcut
         case .enter: return settings.enterShortcut
-        case .capture: return .doubaoDefault
-        case .unbound: return .doubaoDefault
+        case .capture, .unbound, .escape: return .doubaoDefault
         }
     }
 
@@ -308,37 +338,56 @@ final class AppModel: ObservableObject {
             settings.holdShortcut = shortcut
         case .enter:
             settings.enterShortcut = shortcut
-        case .capture:
-            return
-        case .unbound:
+        case .capture, .unbound, .escape:
             return
         }
         persist()
     }
 
-    func beginMouseButtonCapture(for role: MouseBindingRole) {
+    func beginMouseButtonCapture(
+        for role: MouseBindingRole,
+        confirming: Bool = false
+    ) {
         guard monitorStarted else {
             showNotice("请先授权辅助功能，再捕获鼠标键")
             return
         }
         captureMode = true
         captureRole = role
+        confirmationRole = confirming ? role : nil
         status = .capturing
         syncMonitorConfiguration()
-        showOverlay("请按一下要绑定\(role.displayName)的鼠标键")
+        let prompt = confirming
+            ? "请按下默认的\(role.displayName)键"
+            : "请按一下要绑定\(role.displayName)的鼠标键"
+        showOverlay(prompt, tone: .listening)
 
         captureTimeout?.cancel()
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, self.captureMode else { return }
+            if self.confirmationRole != nil,
+               role == .toggle || role == .enter
+            {
+                self.captureMode = false
+                self.captureRole = nil
+                self.confirmationRole = nil
+                self.captureTimeout = nil
+                self.status = self.hasRequiredPermissions ? .ready : .permission
+                self.syncMonitorConfiguration()
+                self.onboardingPhase = .optionsPlus(role)
+                self.overlayController.hide()
+                return
+            }
             self.captureMode = false
             self.captureRole = nil
+            self.confirmationRole = nil
             self.status = self.hasRequiredPermissions ? .ready : .permission
             self.syncMonitorConfiguration()
             self.showNotice("鼠标键捕获超时，请重试")
         }
         captureTimeout = timeout
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + 10,
+            deadline: .now() + (confirming ? 8 : 10),
             execute: timeout
         )
     }
@@ -347,9 +396,12 @@ final class AppModel: ObservableObject {
         guard captureMode else { return }
         captureMode = false
         captureRole = nil
+        confirmationRole = nil
         captureTimeout?.cancel()
         captureTimeout = nil
-        status = hasRequiredPermissions ? .ready : .permission
+        if settings.onboardingCompleted {
+            status = hasRequiredPermissions ? .ready : .permission
+        }
         syncMonitorConfiguration()
         overlayController.hide()
     }
@@ -401,10 +453,6 @@ final class AppModel: ObservableObject {
     }
 
     func persist() {
-        guard MacroEngine().validate(settings.macroRules).isEmpty else {
-            showNotice("语音宏不能包含空文本或重复识别文本")
-            return
-        }
         let mouseButtons = [
             settings.toggleMouseBinding.button,
             settings.holdMouseBinding.button,
@@ -419,6 +467,63 @@ final class AppModel: ObservableObject {
         } catch {
             showNotice("设置保存失败")
         }
+    }
+
+    func advanceOnboarding() {
+        switch onboardingPhase {
+        case .intro:
+            onboardingPhase = .permissions
+            refreshPermissions()
+        case .permissions:
+            guard hasRequiredPermissions else {
+                showNotice("请先授权辅助功能，额外键还需要输入监控")
+                return
+            }
+            startMonitoringIfPossible()
+            beginOnboardingConfirm(for: .toggle)
+        case .confirm:
+            break
+        case .optionsPlus(let role):
+            skipOnboardingConfirm(for: role)
+        case .loginItem:
+            completeOnboarding()
+        case .done:
+            break
+        }
+    }
+
+    func skipOnboardingConfirm(for role: MouseBindingRole) {
+        cancelMouseButtonCapture()
+        switch role {
+        case .toggle:
+            beginOnboardingConfirm(for: .hold)
+        case .hold:
+            beginOnboardingConfirm(for: .enter)
+        default:
+            onboardingPhase = .loginItem
+        }
+    }
+
+    func completeOnboarding(enableLoginItem: Bool? = nil) {
+        cancelMouseButtonCapture()
+        if let enableLoginItem {
+            setLaunchAtLogin(enableLoginItem)
+        }
+        settings.onboardingCompleted = true
+        onboardingPhase = .done
+        persist()
+        status = hasRequiredPermissions ? .ready : .permission
+        syncMonitorConfiguration()
+    }
+
+    func retryOnboardingConfirm(for role: MouseBindingRole) {
+        beginOnboardingConfirm(for: role)
+    }
+
+    func beginOnboardingConfirm(for role: MouseBindingRole) {
+        lastHeardButton = nil
+        onboardingPhase = .confirm(role)
+        beginMouseButtonCapture(for: role, confirming: true)
     }
 
     private func startMonitoringIfPossible() {
@@ -448,9 +553,12 @@ final class AppModel: ObservableObject {
                 toggleButton: settings.toggleMouseBinding.button,
                 holdButton: settings.holdMouseBinding.button,
                 enterButton: settings.enterMouseBinding.button,
-                excludedBundleIDs: settings.excludedBundleIDs,
-                paused: status == .paused,
-                capturing: captureMode
+                navigationExcludedBundleIDs: settings.excludedBundleIDs,
+                holdExcludedBundleIDs: settings.holdExcludedBundleIDs,
+                paused: status == .paused || !settings.onboardingCompleted,
+                capturing: captureMode,
+                wechatHoldPreemptEnabled: settings.wechatHoldPreemptEnabled,
+                swallowEscape: activeSession != nil
             )
         )
     }
@@ -462,8 +570,30 @@ final class AppModel: ObservableObject {
             button: event.button,
             role: event.role.logName
         )
+        if event.role == .escape {
+            cancelActiveSession(announce: true)
+            return
+        }
         if captureMode {
             guard event.kind == .down else { return }
+            if let confirmationRole {
+                lastHeardButton = event.button
+                let expected = mouseBinding(for: confirmationRole).button
+                showOverlay("收到 button \(event.button)", tone: .listening)
+                if event.button == expected {
+                    captureMode = false
+                    captureTimeout?.cancel()
+                    captureTimeout = nil
+                    captureRole = nil
+                    self.confirmationRole = nil
+                    skipOnboardingConfirm(for: confirmationRole)
+                } else {
+                    showNotice(
+                        "收到 button \(event.button)，请按 \(MouseBinding(button: expected).displayName)"
+                    )
+                }
+                return
+            }
             captureMode = false
             captureTimeout?.cancel()
             captureTimeout = nil
@@ -484,6 +614,8 @@ final class AppModel: ObservableObject {
                 beginSession(event)
             case .up:
                 endSession(event)
+            case .dragged:
+                updateHoldCancel(event)
             }
         case .toggle:
             guard event.kind == .down else { return }
@@ -495,9 +627,7 @@ final class AppModel: ObservableObject {
         case .enter:
             guard event.kind == .down else { return }
             sendEnter()
-        case .capture:
-            break
-        case .unbound:
+        case .capture, .unbound, .escape:
             break
         }
     }
@@ -507,6 +637,7 @@ final class AppModel: ObservableObject {
         do {
             try shortcutEmitter.tap(settings.enterShortcut)
             diagnostics.event("enter_emitted")
+            showOverlay("发送", tone: .send, autoHide: 1.2)
         } catch {
             showNotice("发送回车失败")
         }
@@ -514,24 +645,27 @@ final class AppModel: ObservableObject {
 
     private func beginSession(_ event: MouseButtonEvent) {
         guard status != .paused,
+              settings.onboardingCompleted,
               activeSession == nil,
               Date() >= sessionCooldownUntil
         else { return }
         guard event.role == .hold || event.role == .toggle else { return }
 
-        let anchor = try? textAdapter.beginSession()
         let shortcut = shortcut(for: event.role)
         let session = ActiveSession(
-            anchor: anchor,
+            anchor: nil,
             role: event.role,
             shortcut: shortcut,
             bundleIdentifier: event.bundleIdentifier,
-            processIdentifier: event.processIdentifier
+            processIdentifier: event.processIdentifier,
+            pressOrigin: event.location
         )
         activeSession = session
 
         do {
             if event.role == .hold {
+                session.replacingSelection = event.preservesSelection
+                    || selectionRestorer.restore()
                 try shortcutEmitter.keyDown(shortcut)
             } else {
                 try shortcutEmitter.tap(shortcut)
@@ -541,15 +675,44 @@ final class AppModel: ObservableObject {
                 bundleIdentifier: event.bundleIdentifier
             )
             status = .listening
-            if anchor == nil {
-                showOverlay("正在听写（本次不处理语音宏）")
+            let message: String
+            if event.role == .hold {
+                message = session.replacingSelection
+                    ? "将替换选中文字"
+                    : "松开以停止"
             } else {
-                showOverlay("正在听写")
+                message = "听写中"
             }
+            showOverlay(message, tone: .listening)
+            syncMonitorConfiguration()
         } catch {
+            selectionRestorer.clear()
             activeSession = nil
             status = .error
             showNotice("无法发送豆包快捷键")
+        }
+    }
+
+    private func updateHoldCancel(_ event: MouseButtonEvent) {
+        guard let session = activeSession,
+              session.role == .hold,
+              session.phase == .listening
+        else {
+            return
+        }
+        let state = HoldCancelState.from(
+            origin: session.pressOrigin,
+            cursor: event.location,
+            previouslyArmed: session.cancelArmed
+        )
+        session.cancelArmed = state.armed
+        if state.showsCancelHint {
+            showOverlay("再拖将停止", tone: .cancelArmed)
+        } else {
+            let message = session.replacingSelection
+                ? "将替换选中文字"
+                : "松开以停止"
+            showOverlay(message, tone: .listening)
         }
     }
 
@@ -567,14 +730,18 @@ final class AppModel: ObservableObject {
         if let bundleIdentifier = session.bundleIdentifier,
            bundleIdentifier != event.bundleIdentifier
         {
-            cancelActiveSession()
+            cancelActiveSession(announce: true)
             return
         }
 
         session.phase = .processing
         do {
             if session.role == .hold {
+                if session.replacingSelection {
+                    _ = selectionRestorer.restore()
+                }
                 try shortcutEmitter.keyUp(session.shortcut)
+                selectionRestorer.clear()
             } else {
                 try shortcutEmitter.tap(session.shortcut)
             }
@@ -587,83 +754,51 @@ final class AppModel: ObservableObject {
             activeSession = nil
             status = .error
             showNotice("无法停止豆包听写")
+            syncMonitorConfiguration()
             return
         }
 
-        guard let anchor = session.anchor else {
-            finishSession(session.id, message: "本次未读取到可编辑文本")
-            return
-        }
-
-        status = .processing
-        let rules = settings.macroRules
-        let adapter = textAdapter
-        let token = session.cancellation
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                let inserted = try adapter.waitForInsertedText(
-                    after: anchor,
-                    timeout: 1.8
-                )
-                guard !token.isCancelled else { return }
-                let result = MacroEngine().apply(inserted.text, rules: rules)
-                guard result.changed else {
-                    DispatchQueue.main.async {
-                        self?.finishSession(session.id, message: nil)
-                    }
-                    return
-                }
-                guard !token.isCancelled else { return }
-                try adapter.replace(inserted, with: result.output)
-                DispatchQueue.main.async {
-                    self?.finishSession(
-                        session.id,
-                        message: "已应用 \(result.matchCount) 条语音宏"
-                    )
-                }
-            } catch {
-                guard !token.isCancelled else { return }
-                DispatchQueue.main.async {
-                    self?.finishSession(
-                        session.id,
-                        message: "未应用语音宏，已保留原文"
-                    )
-                }
-            }
-        }
+        let announceStop = session.cancelArmed
+        finishSession(session.id, announceStop: announceStop)
     }
 
-    private func finishSession(_ id: UUID, message: String?) {
+    private func finishSession(_ id: UUID, announceStop: Bool) {
         guard activeSession?.id == id else { return }
         activeSession = nil
         sessionCooldownUntil = Date().addingTimeInterval(sessionCooldown)
         status = hasRequiredPermissions ? .ready : .permission
-        if let message {
-            if message.hasPrefix("已应用") {
-                showOverlay(message)
-            } else {
-                showNotice(message)
-            }
+        syncMonitorConfiguration()
+        if announceStop {
+            showOverlay("已停止", tone: .stopped, autoHide: 1.4)
         } else {
             overlayController.hide()
         }
     }
 
-    private func cancelActiveSession() {
+    private func cancelActiveSession(announce: Bool = false) {
         guard let session = activeSession else { return }
         session.cancellation.cancel()
         if session.phase == .listening {
             if session.role == .hold {
+                if session.replacingSelection {
+                    _ = selectionRestorer.restore()
+                }
                 try? shortcutEmitter.keyUp(session.shortcut)
             } else {
                 try? shortcutEmitter.tap(session.shortcut)
             }
         }
+        selectionRestorer.clear()
         activeSession = nil
         if status != .paused {
             status = hasRequiredPermissions ? .ready : .permission
         }
-        overlayController.hide()
+        syncMonitorConfiguration()
+        if announce {
+            showOverlay("已停止", tone: .stopped, autoHide: 1.4)
+        } else {
+            overlayController.hide()
+        }
     }
 
     private func handleApplicationActivation(
@@ -681,22 +816,56 @@ final class AppModel: ObservableObject {
                 "focus_changed",
                 bundleIdentifier: application.bundleIdentifier
             )
-            cancelActiveSession()
+            cancelActiveSession(announce: true)
         }
     }
 
-    private func showOverlay(_ message: String) {
+    private func observeLifecycle() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let notifications: [NSNotification.Name] = [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.screensDidSleepNotification,
+            NSWorkspace.sessionDidResignActiveNotification,
+        ]
+        for name in notifications {
+            let observer = workspace.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.cancelActiveSession(announce: true)
+                }
+            }
+            lifecycleObservers.append(observer)
+        }
+        let terminate = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.cancelActiveSession(announce: false)
+            }
+        }
+        lifecycleObservers.append(terminate)
+    }
+
+    private func showOverlay(
+        _ message: String,
+        tone: OverlayTone = .listening,
+        autoHide: TimeInterval? = nil
+    ) {
         guard settings.overlayEnabled else { return }
-        overlayController.show(message)
+        overlayController.show(message, tone: tone, autoHide: autoHide)
     }
 
     private func showNotice(_ message: String) {
         notice = message
-        showOverlay(message)
+        showOverlay(message, tone: .notice, autoHide: 2.2)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
             guard let self, self.notice == message else { return }
             self.notice = nil
-            self.overlayController.hide()
             if self.status == .error {
                 self.status = self.hasRequiredPermissions
                     ? .ready

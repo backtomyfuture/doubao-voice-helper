@@ -21,40 +21,58 @@ public enum KeyboardModifier: String, Codable, CaseIterable, Hashable, Sendable 
 public struct KeyboardShortcut: Codable, Equatable, Sendable {
     public var keyCode: UInt16
     public var modifiers: Set<KeyboardModifier>
+    public var physicalKeyCodes: [UInt16]
 
-    public init(keyCode: UInt16, modifiers: Set<KeyboardModifier> = []) {
+    public init(
+        keyCode: UInt16,
+        modifiers: Set<KeyboardModifier> = [],
+        physicalKeyCodes: [UInt16] = []
+    ) {
         self.keyCode = keyCode
         self.modifiers = modifiers
+        self.physicalKeyCodes = physicalKeyCodes
+    }
+
+    public init(physicalKeyCodes: [UInt16]) {
+        self.physicalKeyCodes = physicalKeyCodes
+        self.keyCode = physicalKeyCodes.last ?? 0
+        self.modifiers = Set(
+            physicalKeyCodes.compactMap(ShortcutStroke.modifier(forKeyCode:))
+        )
     }
 
     public static let doubaoDefault = KeyboardShortcut(
         keyCode: 59,
-        modifiers: [.control]
+        modifiers: [.control],
+        physicalKeyCodes: [59]
     )
 
     public var displayName: String {
-        let modifierNames = KeyboardModifier.allCases
-            .filter { modifiers.contains($0) }
-            .map(\.displayName)
-            .joined()
-        if let modifierName = modifierKeyName {
-            let primaryModifier = modifierForKeyCode
-            let extraModifiers = KeyboardModifier.allCases
-                .filter {
-                    modifiers.contains($0) && $0 != primaryModifier
-                }
-                .map(\.displayName)
-                .joined()
-            if extraModifiers.isEmpty {
-                return modifierName
-            }
-            return "\(extraModifiers) + \(modifierName)"
+        let codes = ShortcutStroke.resolvedKeyCodes(for: self)
+        if codes.isEmpty {
+            return Self.displayName(forKeyCode: keyCode)
         }
-        return "\(modifierNames)\(keyName)"
+        if codes.allSatisfy(ShortcutStroke.isModifierKey) {
+            return codes.map(Self.displayName(forKeyCode:)).joined(separator: " + ")
+        }
+        let modifierPrefix = codes
+            .filter(ShortcutStroke.isModifierKey)
+            .map(Self.displayName(forKeyCode:))
+            .joined(separator: " + ")
+        let keyPart = codes.last.map(Self.displayName(forKeyCode:)) ?? Self.displayName(forKeyCode: keyCode)
+        if modifierPrefix.isEmpty {
+            return keyPart
+        }
+        return "\(modifierPrefix) + \(keyPart)"
     }
 
-    private var modifierKeyName: String? {
+    public static func displayName(forKeyCode keyCode: UInt16) -> String {
         switch keyCode {
+        case 36: return "Return"
+        case 48: return "Tab"
+        case 49: return "Space"
+        case 51: return "Delete"
+        case 53: return "Escape"
         case 54: return "右 Command"
         case 55: return "左 Command"
         case 56: return "左 Shift"
@@ -64,28 +82,6 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
         case 61: return "右 Option"
         case 62: return "右 Control"
         case 63: return "fn"
-        default: return nil
-        }
-    }
-
-    private var modifierForKeyCode: KeyboardModifier? {
-        switch keyCode {
-        case 54, 55: return .command
-        case 56, 60: return .shift
-        case 58, 61: return .option
-        case 59, 62: return .control
-        case 63: return .function
-        default: return nil
-        }
-    }
-
-    private var keyName: String {
-        switch keyCode {
-        case 36: return "Return"
-        case 48: return "Tab"
-        case 49: return "Space"
-        case 51: return "Delete"
-        case 53: return "Escape"
         case 117: return "Forward Delete"
         case 123: return "←"
         case 124: return "→"
@@ -93,6 +89,29 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
         case 126: return "↑"
         default: return "keyCode \(keyCode)"
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case keyCode
+        case modifiers
+        case physicalKeyCodes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyCode = try container.decode(UInt16.self, forKey: .keyCode)
+        modifiers = try container.decode(Set<KeyboardModifier>.self, forKey: .modifiers)
+        physicalKeyCodes = try container.decodeIfPresent(
+            [UInt16].self,
+            forKey: .physicalKeyCodes
+        ) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(keyCode, forKey: .keyCode)
+        try container.encode(modifiers, forKey: .modifiers)
+        try container.encode(physicalKeyCodes, forKey: .physicalKeyCodes)
     }
 }
 
@@ -133,8 +152,12 @@ public struct MacroRule: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 7
+    public static let currentSchemaVersion = 8
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
+    public static let doubaoClientBundleIDs = [
+        "com.bot.pc.doubao",
+        "com.work.pc.doubao",
+    ]
 
     public var schemaVersion: Int
     public var toggleMouseBinding: MouseBinding
@@ -144,9 +167,17 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var holdShortcut: KeyboardShortcut
     public var enterShortcut: KeyboardShortcut
     public var excludedBundleIDs: [String]
+    public var holdExcludedBundleIDs: [String]
     public var macroRules: [MacroRule]
     public var launchAtLogin: Bool
     public var overlayEnabled: Bool
+    public var wechatHoldPreemptEnabled: Bool
+    public var onboardingCompleted: Bool
+
+    public var navigationExcludedBundleIDs: [String] {
+        get { excludedBundleIDs }
+        set { excludedBundleIDs = newValue }
+    }
 
     public init(
         schemaVersion: Int = AppSettings.currentSchemaVersion,
@@ -156,10 +187,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
         toggleShortcut: KeyboardShortcut = AppSettings.defaultToggleShortcut,
         holdShortcut: KeyboardShortcut = AppSettings.defaultHoldShortcut,
         enterShortcut: KeyboardShortcut = AppSettings.defaultEnterShortcut,
-        excludedBundleIDs: [String] = AppSettings.defaultExcludedBundleIDs,
+        excludedBundleIDs: [String] = AppSettings.defaultNavigationExcludedBundleIDs,
+        holdExcludedBundleIDs: [String] = AppSettings.defaultHoldExcludedBundleIDs,
         macroRules: [MacroRule] = AppSettings.defaultMacroRules,
         launchAtLogin: Bool = true,
-        overlayEnabled: Bool = true
+        overlayEnabled: Bool = true,
+        wechatHoldPreemptEnabled: Bool = true,
+        onboardingCompleted: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.toggleMouseBinding = toggleMouseBinding
@@ -169,9 +203,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.holdShortcut = holdShortcut
         self.enterShortcut = enterShortcut
         self.excludedBundleIDs = excludedBundleIDs
+        self.holdExcludedBundleIDs = holdExcludedBundleIDs
         self.macroRules = macroRules
         self.launchAtLogin = launchAtLogin
         self.overlayEnabled = overlayEnabled
+        self.wechatHoldPreemptEnabled = wechatHoldPreemptEnabled
+        self.onboardingCompleted = onboardingCompleted
     }
 
     public init(from decoder: Decoder) throws {
@@ -250,24 +287,35 @@ public struct AppSettings: Codable, Equatable, Sendable {
         ) ?? AppSettings.defaultEnterShortcut
         var decodedExcludedBundleIDs = try container.decodeIfPresent(
             [String].self,
+            forKey: .navigationExcludedBundleIDs
+        ) ?? container.decodeIfPresent(
+            [String].self,
             forKey: .excludedBundleIDs
-        ) ?? AppSettings.defaultExcludedBundleIDs
+        ) ?? AppSettings.defaultNavigationExcludedBundleIDs
         if decodedSchemaVersion < AppSettings.currentSchemaVersion {
-            for bundleIdentifier in AppSettings.defaultExcludedBundleIDs
+            for bundleIdentifier in AppSettings.defaultNavigationExcludedBundleIDs
                 where !decodedExcludedBundleIDs.contains(bundleIdentifier)
             {
                 decodedExcludedBundleIDs.append(bundleIdentifier)
             }
         }
+        if decodedSchemaVersion < 8 {
+            decodedExcludedBundleIDs.removeAll { identifier in
+                AppSettings.doubaoClientBundleIDs.contains(identifier)
+            }
+        }
         if !decodedExcludedBundleIDs.contains(AppSettings.bundleIdentifier) {
             decodedExcludedBundleIDs.append(AppSettings.bundleIdentifier)
         }
-        decodedExcludedBundleIDs.removeAll {
-            $0 == "com.stablyai.orca" ||
-                $0 == "com.citrolabs.ego" ||
-                $0 == "com.citrolabs.ego.lite"
-        }
         excludedBundleIDs = decodedExcludedBundleIDs
+        var decodedHoldExcludedBundleIDs = try container.decodeIfPresent(
+            [String].self,
+            forKey: .holdExcludedBundleIDs
+        ) ?? AppSettings.defaultHoldExcludedBundleIDs
+        if !decodedHoldExcludedBundleIDs.contains(AppSettings.bundleIdentifier) {
+            decodedHoldExcludedBundleIDs.append(AppSettings.bundleIdentifier)
+        }
+        holdExcludedBundleIDs = decodedHoldExcludedBundleIDs
         macroRules = try container.decodeIfPresent(
             [MacroRule].self,
             forKey: .macroRules
@@ -280,6 +328,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .overlayEnabled
         ) ?? true
+        wechatHoldPreemptEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .wechatHoldPreemptEnabled
+        ) ?? true
+        onboardingCompleted = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .onboardingCompleted
+        ) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -301,9 +357,22 @@ public struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(holdShortcut, forKey: .holdShortcut)
         try container.encode(enterShortcut, forKey: .enterShortcut)
         try container.encode(excludedBundleIDs, forKey: .excludedBundleIDs)
+        try container.encode(
+            excludedBundleIDs,
+            forKey: .navigationExcludedBundleIDs
+        )
+        try container.encode(
+            holdExcludedBundleIDs,
+            forKey: .holdExcludedBundleIDs
+        )
         try container.encode(macroRules, forKey: .macroRules)
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(overlayEnabled, forKey: .overlayEnabled)
+        try container.encode(
+            wechatHoldPreemptEnabled,
+            forKey: .wechatHoldPreemptEnabled
+        )
+        try container.encode(onboardingCompleted, forKey: .onboardingCompleted)
     }
 
     public var mouseBinding: MouseBinding {
@@ -317,15 +386,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
     }
 
     public func isExcluded(bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
-            return false
-        }
-        return excludedBundleIDs.contains {
-            bundleIdentifier == $0 || bundleIdentifier.hasPrefix($0 + ".")
-        }
+        isNavigationExcluded(bundleIdentifier: bundleIdentifier)
     }
 
-    public static let defaultExcludedBundleIDs = [
+    public func isNavigationExcluded(bundleIdentifier: String?) -> Bool {
+        BundleExclusion.matches(bundleIdentifier, in: excludedBundleIDs)
+    }
+
+    public func isHoldExcluded(bundleIdentifier: String?) -> Bool {
+        BundleExclusion.matches(bundleIdentifier, in: holdExcludedBundleIDs)
+    }
+
+    public static let defaultNavigationExcludedBundleIDs = [
         "com.apple.finder",
         "com.apple.Safari",
         "com.apple.Preview",
@@ -333,13 +405,20 @@ public struct AppSettings: Codable, Equatable, Sendable {
         "com.microsoft.edgemac",
         "org.mozilla.firefox",
         "company.thebrowser.Browser",
+        "com.stablyai.orca",
+        "com.citrolabs.ego",
+        "com.citrolabs.ego.lite",
         "com.brave.Browser",
         "com.operasoftware.Opera",
         "com.vivaldi.Vivaldi",
-        "com.bot.pc.doubao",
-        "com.work.pc.doubao",
         AppSettings.bundleIdentifier,
     ]
+
+    public static let defaultHoldExcludedBundleIDs = [
+        AppSettings.bundleIdentifier,
+    ]
+
+    public static let defaultExcludedBundleIDs = defaultNavigationExcludedBundleIDs
 
     public static let defaultToggleMouseBinding = MouseBinding(button: 4)
     public static let defaultHoldMouseBinding = MouseBinding(button: 0)
@@ -371,8 +450,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case legacyMouseBinding = "mouseBinding"
         case legacyDoubaoShortcut = "doubaoShortcut"
         case excludedBundleIDs
+        case navigationExcludedBundleIDs
+        case holdExcludedBundleIDs
         case macroRules
         case launchAtLogin
         case overlayEnabled
+        case wechatHoldPreemptEnabled
+        case onboardingCompleted
     }
 }

@@ -54,7 +54,6 @@ struct MenuBarView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var previewInput = "斜杠批准"
 
     var body: some View {
         Form {
@@ -73,9 +72,16 @@ struct SettingsView: View {
                         set: { model.setOverlayEnabled($0) }
                     )
                 )
-                Text("本 App 不录音，只控制豆包并处理本次听写文本。")
+                Text("本 App 不录音，只把鼠标动作映射到豆包快捷键。")
                     .foregroundStyle(.secondary)
                     .font(.footnote)
+                Toggle(
+                    "微信输入区抢跑（避免和微信自己的长按语音冲突）",
+                    isOn: Binding(
+                        get: { model.settings.wechatHoldPreemptEnabled },
+                        set: { model.setWechatHoldPreemptEnabled($0) }
+                    )
+                )
             }
 
             Section("输入") {
@@ -86,85 +92,14 @@ struct SettingsView: View {
                 MouseMappingRow(role: .enter)
                     .environmentObject(model)
                 Text(
-                    "默认：前进键切换语音；左键长按使用左 Control + Option；后退键发送 Return。"
+                    "默认：前进键切换语音；左键长按使用左 Control + Option；后退键发送 Return。非浏览器里后退键会发送。"
                 )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
-            Section("语音宏") {
-                ForEach(
-                    Array(model.settings.macroRules.enumerated()),
-                    id: \.element.id
-                ) { index, rule in
-                    HStack {
-                        Toggle(
-                            "",
-                            isOn: Binding(
-                                get: {
-                                    model.settings.macroRules[index].isEnabled
-                                },
-                                set: { newValue in
-                                    model.updateMacroRule(at: index) {
-                                        $0.isEnabled = newValue
-                                    }
-                                }
-                            )
-                        )
-                        .labelsHidden()
-
-                        TextField(
-                            "识别文本",
-                            text: Binding(
-                                get: {
-                                    model.settings.macroRules[index].source
-                                },
-                                set: { newValue in
-                                    model.updateMacroRule(at: index) {
-                                        $0.source = newValue
-                                    }
-                                }
-                            )
-                        )
-                        Text("→")
-                        TextField(
-                            "输出文本",
-                            text: Binding(
-                                get: {
-                                    model.settings.macroRules[index].replacement
-                                },
-                                set: { newValue in
-                                    model.updateMacroRule(at: index) {
-                                        $0.replacement = newValue
-                                    }
-                                }
-                            )
-                        )
-                        Button(role: .destructive) {
-                            model.removeMacroRule(at: index)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-
-                Button("添加语音宏") {
-                    model.addMacroRule()
-                }
-
-                HStack {
-                    TextField("预览输入", text: $previewInput)
-                    Text("→")
-                    Text(model.preview(previewInput).output)
-                        .textSelection(.enabled)
-                        .frame(minWidth: 120, alignment: .leading)
-                }
-                .padding(.top, 4)
-            }
-
-            Section("排除应用") {
-                Text("排除列表中的应用会完整透传额外鼠标键。")
+            Section("导航排除") {
+                Text("这些应用里前进/后退仍是系统导航。左键长按不受此名单影响。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 ForEach(
@@ -217,23 +152,15 @@ struct SettingsView: View {
                     settingsAction: model.openInputMonitoringSettings
                 )
                 Text(
-                    "辅助功能用于监听鼠标、发送快捷键和访问支持的文本控件。前进/后退等额外鼠标键需要输入监控权限。"
+                    "辅助功能用于监听鼠标并发送快捷键。前进/后退等额外鼠标键需要输入监控权限。"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
 
-            Section("首版兼容范围") {
-                ForEach(TargetCompatibility.minimumMatrix) { target in
-                    HStack {
-                        Text(target.name)
-                        Spacer()
-                        Text("待实机验证")
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            Section("说明") {
                 Text(
-                    "无法证明文本范围时只触发豆包，保留原文，不使用退格、撤销或剪贴板回退。"
+                    "按住式：约 280ms 长按，移动超过 6pt 当拖拽。拖远可取消。Esc 在听写中停止豆包。微信里会抢在官方长按语音之前接管左键。"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -303,7 +230,7 @@ private struct MouseMappingRow: View {
     }
 }
 
-private struct PermissionRow: View {
+struct PermissionRow: View {
     let title: String
     let granted: Bool
     let required: Bool
@@ -376,7 +303,7 @@ private final class ShortcutRecorderView: NSView {
     var onShortcut: ((AppKeyboardShortcut) -> Void)?
     var onCancel: (() -> Void)?
     private var activeModifierShortcut: AppKeyboardShortcut?
-    private var capturedModifiers = Set<KeyboardModifier>()
+    private var capturedKeyCodes: [UInt16] = []
     var isRecording = false
 
     override var acceptsFirstResponder: Bool {
@@ -393,7 +320,7 @@ private final class ShortcutRecorderView: NSView {
         guard recording != isRecording else { return }
         isRecording = recording
         activeModifierShortcut = nil
-        capturedModifiers.removeAll()
+        capturedKeyCodes.removeAll()
         if recording {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -410,17 +337,18 @@ private final class ShortcutRecorderView: NSView {
         if event.keyCode == 53 {
             isRecording = false
             activeModifierShortcut = nil
-            capturedModifiers.removeAll()
+            capturedKeyCodes.removeAll()
             onCancel?()
             needsDisplay = true
             return
         }
         shortcut = AppKeyboardShortcut(
             keyCode: event.keyCode,
-            modifiers: modifiers(from: event.modifierFlags)
+            modifiers: modifiers(from: event.modifierFlags),
+            physicalKeyCodes: capturedKeyCodes + [event.keyCode]
         )
         activeModifierShortcut = nil
-        capturedModifiers.removeAll()
+        capturedKeyCodes.removeAll()
         onShortcut?(shortcut)
         needsDisplay = true
     }
@@ -434,14 +362,18 @@ private final class ShortcutRecorderView: NSView {
                 onShortcut?(shortcut)
             }
             activeModifierShortcut = nil
-            capturedModifiers.removeAll()
+            capturedKeyCodes.removeAll()
             return
         }
 
-        capturedModifiers.formUnion(activeModifiers)
+        if ShortcutStroke.isModifierKey(event.keyCode),
+           !capturedKeyCodes.contains(event.keyCode)
+        {
+            capturedKeyCodes.append(event.keyCode)
+        }
+        guard !capturedKeyCodes.isEmpty else { return }
         activeModifierShortcut = AppKeyboardShortcut(
-            keyCode: preferredModifierKeyCode(for: capturedModifiers),
-            modifiers: capturedModifiers
+            physicalKeyCodes: capturedKeyCodes
         )
         needsDisplay = true
     }
@@ -458,16 +390,6 @@ private final class ShortcutRecorderView: NSView {
         return result
     }
 
-    private func preferredModifierKeyCode(
-        for modifiers: Set<KeyboardModifier>
-    ) -> UInt16 {
-        if modifiers.contains(.control) { return 59 }
-        if modifiers.contains(.option) { return 58 }
-        if modifiers.contains(.command) { return 55 }
-        if modifiers.contains(.shift) { return 56 }
-        return 63
-    }
-
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 1, dy: 1)
         NSColor.controlBackgroundColor.setFill()
@@ -475,7 +397,8 @@ private final class ShortcutRecorderView: NSView {
         NSColor.separatorColor.setStroke()
         NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).stroke()
 
-        let text = shortcut.displayName
+        let text = (isRecording ? activeModifierShortcut : nil)?.displayName
+            ?? shortcut.displayName
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
             .foregroundColor: NSColor.labelColor,

@@ -5,7 +5,7 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     init(model: AppModel) {
         let hostingView = NSHostingView(
-            rootView: SettingsView()
+            rootView: RootSettingsView()
                 .environmentObject(model)
         )
         let window = NSWindow(
