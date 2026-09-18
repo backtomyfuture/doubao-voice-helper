@@ -26,16 +26,28 @@ if ! command -v codesign >/dev/null 2>&1; then
     exit 1
 fi
 
+KEYCHAIN_ARG=""
+if [ -n "${CODESIGN_KEYCHAIN:-}" ] && [ -f "${CODESIGN_KEYCHAIN:-}" ]; then
+    KEYCHAIN_ARG="--keychain $CODESIGN_KEYCHAIN"
+    FIND_ARG="$CODESIGN_KEYCHAIN"
+else
+    FIND_ARG=""
+fi
+
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     SIGNING_IDENTITY="$CODESIGN_IDENTITY"
-elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$LOCAL_SIGNING_IDENTITY\""; then
+elif security find-identity -v -p codesigning $FIND_ARG 2>/dev/null | grep -Fq "\"$LOCAL_SIGNING_IDENTITY\""; then
     SIGNING_IDENTITY="$LOCAL_SIGNING_IDENTITY"
 else
     echo "No stable signing identity named \"$LOCAL_SIGNING_IDENTITY\" was found. Falling back to ad-hoc signing (-)." >&2
     SIGNING_IDENTITY="-"
 fi
 
-codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+    codesign --force --deep --sign "-" "$APP_DIR"
+else
+    codesign --force --deep $KEYCHAIN_ARG --sign "$SIGNING_IDENTITY" "$APP_DIR"
+fi
 
 echo "Built $APP_DIR"
 echo "Signed with $SIGNING_IDENTITY"
