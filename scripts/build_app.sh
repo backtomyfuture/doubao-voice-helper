@@ -19,6 +19,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+cp "$ROOT_DIR"/Resources/MenuBar/*.png "$APP_DIR/Contents/Resources/"
 
 if ! command -v codesign >/dev/null 2>&1; then
     echo "codesign is required to build $APP_NAME.app" >&2

@@ -23,7 +23,11 @@
 | `Sources/DoubaoVoiceHelperCore/` | 规则引擎、设置、权限、快捷键和 AX 文本适配器 |
 | `Sources/DoubaoVoiceHelper/` | 菜单栏 App、事件监听、设置窗口和状态浮层 |
 | `Tests/` | 语音宏与设置持久化测试 |
+| `Resources/AppIcon.icns` | Finder / Dock 应用图标 |
+| `Resources/MenuBar/` | 菜单栏线框与实心鼠标图标（16/18pt、Retina） |
+| `Resources/DMG/` | 安装镜像背景与源文件 |
 | `scripts/build_app.sh` | 构建并生成签名的 `.app` |
+| `scripts/build_dmg.sh` | 使用 DMG 背景生成安装镜像（需要 `create-dmg`） |
 | `scripts/setup_local_signing.sh` | 一次性创建本机稳定开发签名 |
 
 ### 开发
@@ -45,9 +49,9 @@ swift run DoubaoVoiceHelperCoreTests
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build_app.sh
 ```
 
-生成的 App 位于 `build/DoubaoVoiceHelper.app`。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。请始终启动这一份 App，不要在旧的 `DoubaoMousePTT.app` 或其他路径的副本之间切换。
+生成的 App 位于 `build/DoubaoVoiceHelper.app`。菜单栏使用素材包中的鼠标线框图标，监听、处理或捕获状态切换为实心图标；图标会自动适配浅色和深色菜单栏。首次启动需要在“系统设置 → 隐私与安全性”中授予辅助功能权限；本 App 不需要麦克风权限。请始终启动这一份 App，不要在旧的 `DoubaoMousePTT.app` 或其他路径的副本之间切换。
 
-双击 App 会直接打开设置窗口；之后也可以从菜单栏的麦克风图标打开设置。设置页默认提供：
+双击 App 会直接打开设置窗口；之后也可以从菜单栏的鼠标图标打开设置。设置页默认提供：
 
 - 前进键（button 4）→ 左 Control，切换式语音
 - 左键（button 0）长按 → 左 Control + Option，按住式语音

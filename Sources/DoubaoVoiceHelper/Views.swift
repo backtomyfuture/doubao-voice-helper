@@ -14,7 +14,14 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(model.statusTitle, systemImage: model.status.symbolName)
+            Label {
+                Text(model.statusTitle)
+            } icon: {
+                MenuBarIcon(
+                    imageName: model.status.menuBarIconName,
+                    fallbackSystemName: model.status.symbolName
+                )
+            }
                 .font(.headline)
 
             Divider()

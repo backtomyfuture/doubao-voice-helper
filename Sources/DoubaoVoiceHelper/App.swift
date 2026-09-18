@@ -25,10 +25,14 @@ struct DoubaoVoiceHelperApp: App {
             }
                 .environmentObject(model)
         } label: {
-            Label(
-                "豆包语音助手",
-                systemImage: model.status.symbolName
-            )
+            Label {
+                Text("豆包语音助手")
+            } icon: {
+                MenuBarIcon(
+                    imageName: model.status.menuBarIconName,
+                    fallbackSystemName: model.status.symbolName
+                )
+            }
         }
         .menuBarExtraStyle(.menu)
     }

@@ -36,6 +36,15 @@ enum AppStatus {
         case .error: return "exclamationmark.triangle"
         }
     }
+
+    var menuBarIconName: String {
+        switch self {
+        case .listening, .processing, .capturing:
+            return "StatusBarIconFilledTemplate-18pt"
+        case .ready, .paused, .permission, .error:
+            return "StatusBarIconTemplate-18pt"
+        }
+    }
 }
 
 private final class CancellationToken: @unchecked Sendable {
