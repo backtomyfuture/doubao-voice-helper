@@ -142,6 +142,7 @@ final class UpdateService: ObservableObject {
             rm -rf "$TARGET"
             ditto "$STAGED" "$TARGET"
             xattr -cr "$TARGET" 2>/dev/null || true
+            touch "$TARGET"
             open "$TARGET"
             rm -rf "$TEMP_DIR"
             """
