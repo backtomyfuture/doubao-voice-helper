@@ -119,6 +119,10 @@ final class MouseEventMonitor {
     private var replayingButton: Int64?
     private var physicalPoller: DispatchSourceTimer?
     private var movePoller: DispatchSourceTimer?
+    private let navigationQueue = DispatchQueue(
+        label: "com.jarod.doubao-voice-helper.navigation",
+        qos: .userInteractive
+    )
     private lazy var syntheticSource: CGEventSource? = {
         let source = CGEventSource(stateID: .hidSystemState)
         source?.userData = Self.syntheticEventTag
@@ -512,13 +516,18 @@ final class MouseEventMonitor {
             }
             self.emitHoldDragIfLong(button: button, generation: generation)
         }
+        lock.lock()
         physicalPoller = poller
+        lock.unlock()
         poller.resume()
     }
 
     private func stopPhysicalPoller() {
-        physicalPoller?.cancel()
+        lock.lock()
+        let poller = physicalPoller
         physicalPoller = nil
+        lock.unlock()
+        poller?.cancel()
     }
 
     private func emitHoldDragIfLong(button: Int64, generation: UInt64) {
@@ -592,13 +601,18 @@ final class MouseEventMonitor {
                 self.stopMovePoller()
             }
         }
+        lock.lock()
         movePoller = poller
+        lock.unlock()
         poller.resume()
     }
 
     private func stopMovePoller() {
-        movePoller?.cancel()
+        lock.lock()
+        let poller = movePoller
         movePoller = nil
+        lock.unlock()
+        poller?.cancel()
     }
 
     private func deliverDeferredDownIfNeeded(_ button: Int64) {
@@ -627,6 +641,9 @@ final class MouseEventMonitor {
         var wasPreempted: Bool
         var deferredDown: Bool
         var deliveredDown: Bool
+        var bundleIdentifier: String?
+        var processIdentifier: pid_t
+        var origin: CGPoint
     }
 
     private func finishPress(_ button: Int64) -> PressFinish? {
@@ -644,7 +661,10 @@ final class MouseEventMonitor {
             wasLong: state.isLong,
             wasPreempted: state.preempted,
             deferredDown: state.deferredDown,
-            deliveredDown: state.deliveredDown
+            deliveredDown: state.deliveredDown,
+            bundleIdentifier: state.bundleIdentifier,
+            processIdentifier: state.processIdentifier,
+            origin: state.origin
         )
         state.isLong = false
         state.tracking = false
@@ -658,11 +678,9 @@ final class MouseEventMonitor {
         guard let finish = finishPress(button) else { return }
         stopPhysicalPoller()
         stopMovePoller()
-        lock.lock()
-        let bundleIdentifier = pressStates[button]?.bundleIdentifier
-        let processIdentifier = pressStates[button]?.processIdentifier ?? 0
-        let origin = pressStates[button]?.origin ?? NSEvent.mouseLocation
-        lock.unlock()
+        let bundleIdentifier = finish.bundleIdentifier
+        let processIdentifier = finish.processIdentifier
+        let origin = finish.origin
         if finish.wasPreempted, button == 0, viaPhysicalPoll {
             postSyntheticLeftMouseUp(at: quartzLocation(), tap: .cghidEventTap)
         }
@@ -748,6 +766,41 @@ final class MouseEventMonitor {
         }
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
+    }
+
+    private func handleFinderNavigation(
+        role: MouseBindingRole,
+        button: Int64,
+        bundleIdentifier: String?,
+        isDown: Bool
+    ) -> Bool {
+        guard BundleExclusion.matches(bundleIdentifier, in: ["com.apple.finder"]) else {
+            return false
+        }
+
+        let shortcut: KeyboardShortcut?
+        if role == .enter || (button == 3 && role != .toggle) {
+            // 后退：Cmd + [ (kVK_ANSI_LeftBracket = 33)
+            shortcut = KeyboardShortcut(keyCode: 33, modifiers: [.command])
+        } else if role == .toggle || (button == 4 && role != .enter) {
+            // 前进：Cmd + ] (kVK_ANSI_RightBracket = 30)
+            shortcut = KeyboardShortcut(keyCode: 30, modifiers: [.command])
+        } else {
+            shortcut = nil
+        }
+
+        guard let shortcut else {
+            return false
+        }
+
+        if isDown {
+            navigationQueue.async {
+                let emitter = CoreGraphicsShortcutEmitter()
+                try? emitter.tap(shortcut)
+            }
+        }
+
+        return true
     }
 
     private static func physicalButtonDown(_ button: Int64) -> Bool {
@@ -883,6 +936,14 @@ final class MouseEventMonitor {
             excluded = false
         }
         guard !excluded else {
+            if monitor.handleFinderNavigation(
+                role: role,
+                button: button,
+                bundleIdentifier: bundleIdentifier,
+                isDown: isDown
+            ) {
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
 
