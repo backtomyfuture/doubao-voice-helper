@@ -81,14 +81,17 @@ public enum TextTargetError: Error {
 }
 
 public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
-    private let sampleInterval: TimeInterval
+    private let detectInterval: TimeInterval
+    private let confirmInterval: TimeInterval
     private let stableSampleCount: Int
 
     public init(
-        sampleInterval: TimeInterval = 0.08,
+        detectInterval: TimeInterval = 0.02,
+        confirmInterval: TimeInterval = 0.04,
         stableSampleCount: Int = 2
     ) {
-        self.sampleInterval = sampleInterval
+        self.detectInterval = detectInterval
+        self.confirmInterval = confirmInterval
         self.stableSampleCount = max(stableSampleCount, 1)
     }
 
@@ -137,7 +140,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
                 return try makeInsertion(anchor: anchor, current: current.text)
             }
 
-            Thread.sleep(forTimeInterval: sampleInterval)
+            Thread.sleep(forTimeInterval: sawChange ? confirmInterval : detectInterval)
         }
 
         throw sawChange ? TextTargetError.insertionNotUnique : TextTargetError.settleTimeout
@@ -241,14 +244,18 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
     }
 
     private func emitKeyStrokeReplacement(deleteCount: Int, replacement: String) {
-        for _ in 0..<deleteCount {
-            if let down = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true) {
-                down.post(tap: .cghidEventTap)
+        let batchSize = 5
+        for batchStart in stride(from: 0, to: deleteCount, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, deleteCount)
+            for _ in batchStart..<batchEnd {
+                if let down = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true) {
+                    down.post(tap: .cghidEventTap)
+                }
+                if let up = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: false) {
+                    up.post(tap: .cghidEventTap)
+                }
             }
-            if let up = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: false) {
-                up.post(tap: .cghidEventTap)
-            }
-            usleep(8_000) // 8ms
+            usleep(12_000) // 12ms per batch
         }
         usleep(15_000)
 

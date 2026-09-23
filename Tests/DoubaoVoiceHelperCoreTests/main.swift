@@ -79,6 +79,42 @@ private func testDisabledRulesAreIgnored() throws {
     try expectEqual(result.matchCount, 0, "disabled rule count")
 }
 
+private func testNormalizedMatchWithPunctuation() throws {
+    let result = MacroEngine().apply(
+        "斜杠，批准",
+        rules: [
+            MacroRule(source: "斜杠批准", replacement: "/approve"),
+            MacroRule(source: "斜杠", replacement: "/"),
+        ]
+    )
+    try expectEqual(result.output, "/approve", "normalized match with comma")
+    try expectEqual(result.matchCount, 1, "normalized match count")
+}
+
+private func testNormalizedMatchWithSpaces() throws {
+    let result = MacroEngine().apply(
+        "斜杠 批准",
+        rules: [
+            MacroRule(source: "斜杠批准", replacement: "/approve"),
+            MacroRule(source: "斜杠", replacement: "/"),
+        ]
+    )
+    try expectEqual(result.output, "/approve", "normalized match with space")
+    try expectEqual(result.matchCount, 1, "normalized match with space count")
+}
+
+private func testExactMatchStillPreferred() throws {
+    let result = MacroEngine().apply(
+        "斜杠批准",
+        rules: [
+            MacroRule(source: "斜杠批准", replacement: "/approve"),
+            MacroRule(source: "斜杠", replacement: "/"),
+        ]
+    )
+    try expectEqual(result.output, "/approve", "exact match preferred")
+    try expectEqual(result.matchCount, 1, "exact match count")
+}
+
 private func testRuleValidation() throws {
     let empty = MacroRule(source: "", replacement: "/")
     let duplicate = MacroRule(source: "斜杠", replacement: "//")
@@ -845,6 +881,9 @@ let tests: [(String, () throws -> Void)] = [
     ("non-recursive replacement", testReplacementIsNotRecursive),
     ("unicode and multiple matches", testUnicodeAndMultipleMatches),
     ("disabled rules", testDisabledRulesAreIgnored),
+    ("normalized match with punctuation", testNormalizedMatchWithPunctuation),
+    ("normalized match with spaces", testNormalizedMatchWithSpaces),
+    ("exact match preferred", testExactMatchStillPreferred),
     ("rule validation", testRuleValidation),
     ("app version comparison", testAppVersionComparison),
     ("hold shortcut presses option then control", testHoldShortcutPressesOptionThenControl),

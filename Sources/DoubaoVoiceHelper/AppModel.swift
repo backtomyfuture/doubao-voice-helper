@@ -903,6 +903,9 @@ final class AppModel: ObservableObject {
                             bundleIdentifier: bundleID,
                             role: "\(error)"
                         )
+                        DispatchQueue.main.async { [weak self] in
+                            self?.showOverlay("宏替换不可用", tone: .notice, autoHide: 1.5)
+                        }
                     }
                 }
             }
