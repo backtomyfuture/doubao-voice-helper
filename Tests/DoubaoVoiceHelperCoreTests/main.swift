@@ -220,7 +220,7 @@ private func testLegacySettingsMigration() throws {
     let settings = SettingsRepository(fileURL: fileURL).load()
 
     try expectEqual(settings.toggleMouseBinding.button, 4, "legacy toggle button")
-    try expectEqual(settings.holdMouseBinding.button, 0, "legacy hold button")
+    try expectEqual(settings.holdMouseBinding.button, -1, "legacy hold button migrated to unbound")
     try expectEqual(settings.enterMouseBinding.button, 3, "legacy enter button")
     try expectEqual(
         settings.toggleShortcut,
@@ -630,6 +630,26 @@ private func testHoldStartEvaluator() throws {
         HoldStartEvaluator.decision(
             bundleIdentifier: "com.apple.Terminal",
             wechatContainsPoint: nil,
+            hitRole: "AXWindow",
+            ancestorRoles: []
+        ),
+        .veto,
+        "window titlebar vetoes"
+    )
+    try expectEqual(
+        HoldStartEvaluator.decision(
+            bundleIdentifier: "com.apple.Terminal",
+            wechatContainsPoint: nil,
+            hitRole: "AXToolbar",
+            ancestorRoles: []
+        ),
+        .veto,
+        "toolbar vetoes"
+    )
+    try expectEqual(
+        HoldStartEvaluator.decision(
+            bundleIdentifier: "com.apple.Terminal",
+            wechatContainsPoint: nil,
             hitRole: nil,
             ancestorRoles: []
         ),
@@ -691,7 +711,7 @@ private func testSchemaEightStripsDoubaoExclude() throws {
         !loaded.excludedBundleIDs.contains("com.bot.pc.doubao"),
         "schema 8 strips doubao exclude"
     )
-    try expectEqual(loaded.schemaVersion, 9, "schema bumped to 9")
+    try expectEqual(loaded.schemaVersion, 10, "schema bumped to 10")
 }
 
 private func testSchemaNineMacroRulesMigration() throws {
@@ -726,7 +746,7 @@ private func testSchemaNineMacroRulesMigration() throws {
     )
     try Data(settings.utf8).write(to: fileURL)
     let loaded = SettingsRepository(fileURL: fileURL).load()
-    try expectEqual(loaded.schemaVersion, 9, "schema bumped to 9")
+    try expectEqual(loaded.schemaVersion, 10, "schema bumped to 10")
     try expect(
         loaded.macroRules.contains(where: { $0.source == "approve" && $0.replacement == "/approve" }),
         "schema 9 adds approve rule"
@@ -739,6 +759,34 @@ private func testSchemaNineMacroRulesMigration() throws {
         loaded.macroRules.contains(where: { $0.source == "旧规则" }),
         "preserves existing user rules"
     )
+}
+
+private func testSchemaTenHoldButtonMigration() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fileURL = directory.appendingPathComponent("settings.json")
+    let settings = """
+    {
+      "schemaVersion": 9,
+      "toggleMouseBinding": { "button": 4 },
+      "holdMouseBinding": { "button": 0 },
+      "enterMouseBinding": { "button": 3 },
+      "toggleShortcut": { "keyCode": 59, "modifiers": ["control"] },
+      "holdShortcut": { "keyCode": 59, "modifiers": ["control", "option"] },
+      "enterShortcut": { "keyCode": 36, "modifiers": [] },
+      "excludedBundleIDs": ["com.jarod.doubao-voice-helper"],
+      "launchAtLogin": false,
+      "overlayEnabled": true
+    }
+    """
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    try Data(settings.utf8).write(to: fileURL)
+    let loaded = SettingsRepository(fileURL: fileURL).load()
+    try expectEqual(loaded.schemaVersion, 10, "schema bumped to 10")
+    try expectEqual(loaded.holdMouseBinding.button, -1, "schema 10 unbinds button 0")
 }
 
 func testAppVersionComparison() throws {
@@ -818,6 +866,7 @@ let tests: [(String, () throws -> Void)] = [
     ("navigation exclude lists", testNavigationExcludeDoesNotIncludeDoubao),
     ("schema eight strips doubao", testSchemaEightStripsDoubaoExclude),
     ("schema nine macro rules migration", testSchemaNineMacroRulesMigration),
+    ("schema ten hold button migration", testSchemaTenHoldButtonMigration),
     ("logi options patch json", testLogiOptionsPatchJson),
 ]
 

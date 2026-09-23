@@ -146,6 +146,7 @@ public struct MouseBinding: Codable, Equatable, Sendable {
 
     public var displayName: String {
         switch button {
+        case -1: return "未绑定"
         case 0: return "鼠标左键"
         case 1: return "鼠标右键"
         case 2: return "鼠标中键"
@@ -206,7 +207,7 @@ public struct AppVersion: Comparable, Equatable, CustomStringConvertible, Sendab
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 9
+    public static let currentSchemaVersion = 10
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
     public static let gitHubRepository = "backtomyfuture/doubao-voice-helper"
     public static let gitHubReleasesAPIURL = URL(string: "https://api.github.com/repos/backtomyfuture/doubao-voice-helper/releases/latest")!
@@ -214,6 +215,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let doubaoClientBundleIDs = [
         "com.bot.pc.doubao",
         "com.work.pc.doubao",
+        "com.bytedance.inputmethod.doubaoime",
     ]
 
     public var schemaVersion: Int
@@ -385,6 +387,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
             }
         }
         macroRules = decodedMacroRules
+        if decodedSchemaVersion < 10 {
+            if holdMouseBinding.button <= 1 {
+                holdMouseBinding = AppSettings.defaultHoldMouseBinding
+            }
+        }
         launchAtLogin = try container.decodeIfPresent(
             Bool.self,
             forKey: .launchAtLogin
@@ -486,7 +493,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let defaultExcludedBundleIDs = defaultNavigationExcludedBundleIDs
 
     public static let defaultToggleMouseBinding = MouseBinding(button: 4)
-    public static let defaultHoldMouseBinding = MouseBinding(button: 0)
+    public static let defaultHoldMouseBinding = MouseBinding(button: -1)
     public static let defaultEnterMouseBinding = MouseBinding(button: 3)
     public static let defaultToggleShortcut = KeyboardShortcut(
         keyCode: 59,

@@ -113,7 +113,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
         var sawChange = false
 
         while Date() < deadline {
-            let focused = try focusedElement()
+            let focused = try focusedElement(preferredPID: anchor.identity.processIdentifier)
             guard CFEqual(focused, anchor.element) else {
                 throw TextTargetError.focusChanged
             }
@@ -144,7 +144,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
     }
 
     public func replace(_ insertion: InsertedText, with text: String) throws {
-        let focused = try focusedElement()
+        let focused = try focusedElement(preferredPID: insertion.anchor.identity.processIdentifier)
         guard CFEqual(focused, insertion.anchor.element) else {
             throw TextTargetError.focusChanged
         }
@@ -292,11 +292,13 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
 
         for pid in pidsToTry {
             let appElement = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(appElement, 0.2)
             if let val = copyAttribute(kAXFocusedUIElementAttribute as CFString, from: appElement) {
                 return val as! AXUIElement
             }
             if let win = copyAttribute(kAXFocusedWindowAttribute as CFString, from: appElement) {
                 let winElement = win as! AXUIElement
+                AXUIElementSetMessagingTimeout(winElement, 0.2)
                 if let val = copyAttribute(kAXFocusedUIElementAttribute as CFString, from: winElement) {
                     return val as! AXUIElement
                 }
@@ -305,6 +307,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
 
         // 回退到系统全局焦点元素
         let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.2)
         guard let value = copyAttribute(
             kAXFocusedUIElementAttribute as CFString,
             from: system

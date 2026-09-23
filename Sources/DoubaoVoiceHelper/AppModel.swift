@@ -72,13 +72,27 @@ private final class ActiveSession: @unchecked Sendable {
     }
 
     let id = UUID()
-    let anchor: TextSessionAnchor?
+    private let anchorLock = NSLock()
+    private var _anchor: TextSessionAnchor?
+    var anchor: TextSessionAnchor? {
+        get {
+            anchorLock.lock()
+            defer { anchorLock.unlock() }
+            return _anchor
+        }
+        set {
+            anchorLock.lock()
+            defer { anchorLock.unlock() }
+            _anchor = newValue
+        }
+    }
     let role: MouseBindingRole
     let shortcut: KeyboardShortcut
-    let bundleIdentifier: String?
-    let processIdentifier: pid_t
+    var bundleIdentifier: String?
+    var processIdentifier: pid_t
     let cancellation = CancellationToken()
     var phase: Phase = .listening
+    let startedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     let pressOrigin: CGPoint
     var cancelArmed = false
     var replacingSelection = false
@@ -91,7 +105,7 @@ private final class ActiveSession: @unchecked Sendable {
         processIdentifier: pid_t,
         pressOrigin: CGPoint
     ) {
-        self.anchor = anchor
+        self._anchor = anchor
         self.role = role
         self.shortcut = shortcut
         self.bundleIdentifier = bundleIdentifier
@@ -374,7 +388,11 @@ final class AppModel: ObservableObject {
     }
 
     func setMouseButton(_ button: Int64, for role: MouseBindingRole) {
-        guard button >= 0 else { return }
+        if button == 0 || button == 1 {
+            showNotice("鼠标左键与右键已保留为系统操作，不能绑定")
+            return
+        }
+        guard button == -1 || button > 1 else { return }
         switch role {
         case .toggle:
             settings.toggleMouseBinding.button = button
@@ -581,9 +599,9 @@ final class AppModel: ObservableObject {
             settings.toggleMouseBinding.button,
             settings.holdMouseBinding.button,
             settings.enterMouseBinding.button,
-        ]
+        ].filter { $0 > 1 }
         guard Set(mouseButtons).count == mouseButtons.count else {
-            showNotice("三种鼠标功能不能绑定同一个按键")
+            showNotice("鼠标功能不能绑定同一个按键")
             return
         }
         do {
@@ -620,7 +638,11 @@ final class AppModel: ObservableObject {
         cancelMouseButtonCapture()
         switch role {
         case .toggle:
-            beginOnboardingConfirm(for: .hold)
+            if settings.holdMouseBinding.button > 1 {
+                beginOnboardingConfirm(for: .hold)
+            } else {
+                beginOnboardingConfirm(for: .enter)
+            }
         case .hold:
             beginOnboardingConfirm(for: .enter)
         default:
@@ -695,7 +717,7 @@ final class AppModel: ObservableObject {
             role: event.role.logName
         )
         if event.role == .escape {
-            cancelActiveSession(announce: true)
+            cancelActiveSession(announce: true, emitCancelShortcut: false)
             return
         }
         if captureMode {
@@ -743,10 +765,27 @@ final class AppModel: ObservableObject {
             }
         case .toggle:
             guard event.kind == .down else { return }
-            if activeSession == nil {
-                beginSession(event)
+            if let session = activeSession {
+                if session.phase == .listening {
+                    let elapsed = ProcessInfo.processInfo.systemUptime - session.startedAt
+                    if elapsed < 0.15 {
+                        diagnostics.event(
+                            "toggle_debounced",
+                            bundleIdentifier: event.bundleIdentifier,
+                            button: event.button
+                        )
+                        return
+                    }
+                    endSession(event)
+                } else {
+                    // Previous session was in .processing phase (e.g. waiting for macro settlement in Notion).
+                    // User wants to start a new voice recording immediately!
+                    cancelActiveSession(announce: false, emitCancelShortcut: false)
+                    sessionCooldownUntil = .distantPast
+                    beginSession(event)
+                }
             } else {
-                endSession(event)
+                beginSession(event)
             }
         case .enter:
             guard event.kind == .down else { return }
@@ -757,7 +796,11 @@ final class AppModel: ObservableObject {
     }
 
     private func sendEnter() {
-        guard status != .paused, activeSession == nil else { return }
+        guard status != .paused else { return }
+        if activeSession != nil {
+            cancelActiveSession(announce: false, emitCancelShortcut: false)
+            usleep(60_000)
+        }
         do {
             try shortcutEmitter.tap(settings.enterShortcut)
             diagnostics.event("enter_emitted")
@@ -768,10 +811,18 @@ final class AppModel: ObservableObject {
     }
 
     private func beginSession(_ event: MouseButtonEvent) {
-        guard status != .paused,
-              settings.onboardingCompleted,
-              Date() >= sessionCooldownUntil
-        else { return }
+        guard status != .paused else {
+            diagnostics.event("session_blocked", bundleIdentifier: event.bundleIdentifier, role: "paused")
+            return
+        }
+        guard settings.onboardingCompleted else {
+            diagnostics.event("session_blocked", bundleIdentifier: event.bundleIdentifier, role: "onboarding")
+            return
+        }
+        guard Date() >= sessionCooldownUntil else {
+            diagnostics.event("session_blocked", bundleIdentifier: event.bundleIdentifier, role: "cooldown")
+            return
+        }
         guard event.role == .hold || event.role == .toggle else { return }
 
         if let existing = activeSession {
@@ -787,25 +838,8 @@ final class AppModel: ObservableObject {
         }
 
         let shortcut = shortcut(for: event.role)
-        let anchor: TextSessionAnchor?
-        do {
-            let captured = try textAdapter.beginSession(targetProcessIdentifier: event.processIdentifier)
-            anchor = captured
-            diagnostics.event(
-                "anchor_captured",
-                bundleIdentifier: event.bundleIdentifier,
-                role: "\(captured.identity.role):\(captured.originalText.count)chars"
-            )
-        } catch {
-            anchor = nil
-            diagnostics.event(
-                "anchor_failed",
-                bundleIdentifier: event.bundleIdentifier,
-                role: "\(error)"
-            )
-        }
         let session = ActiveSession(
-            anchor: anchor,
+            anchor: nil,
             role: event.role,
             shortcut: shortcut,
             bundleIdentifier: event.bundleIdentifier,
@@ -849,6 +883,29 @@ final class AppModel: ObservableObject {
                     self.cancelActiveSession(announce: true)
                 }
             }
+
+            if !settings.macroRules.isEmpty {
+                let targetPID = event.processIdentifier
+                let bundleID = event.bundleIdentifier
+                DispatchQueue.global(qos: .userInitiated).async { [weak self, weak session] in
+                    guard let self, let session else { return }
+                    do {
+                        let captured = try self.textAdapter.beginSession(targetProcessIdentifier: targetPID)
+                        session.anchor = captured
+                        self.diagnostics.event(
+                            "anchor_captured",
+                            bundleIdentifier: bundleID,
+                            role: "\(captured.identity.role):\(captured.originalText.count)chars"
+                        )
+                    } catch {
+                        self.diagnostics.event(
+                            "anchor_failed",
+                            bundleIdentifier: bundleID,
+                            role: "\(error)"
+                        )
+                    }
+                }
+            }
         } catch {
             selectionRestorer.clear()
             activeSession = nil
@@ -888,13 +945,6 @@ final class AppModel: ObservableObject {
         }
 
         guard event.role == session.role else {
-            return
-        }
-
-        if let bundleIdentifier = session.bundleIdentifier,
-           bundleIdentifier != event.bundleIdentifier
-        {
-            cancelActiveSession(announce: true)
             return
         }
 
@@ -946,6 +996,19 @@ final class AppModel: ObservableObject {
         let token = session.cancellation
         let diagnostics = self.diagnostics
         let bundleID = session.bundleIdentifier
+        let sessionID = session.id
+
+        // 兜底保护：防止异步处理因未知原因卡死，5秒后自动强制重置
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self,
+                  let current = self.activeSession,
+                  current.id == sessionID,
+                  current.phase == .processing
+            else { return }
+            self.diagnostics.event("session_timeout", bundleIdentifier: bundleID)
+            self.finishSession(sessionID, announceStop: false)
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let inserted = try adapter.waitForInsertedText(
@@ -982,11 +1045,19 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 guard !token.isCancelled else { return }
-                diagnostics.event(
-                    "replace_error",
-                    bundleIdentifier: bundleID,
-                    role: "\(error)"
-                )
+                if let targetErr = error as? TextTargetError, targetErr == .settleTimeout {
+                    diagnostics.event(
+                        "macro_skipped",
+                        bundleIdentifier: bundleID,
+                        role: "settle_timeout_no_change"
+                    )
+                } else {
+                    diagnostics.event(
+                        "replace_error",
+                        bundleIdentifier: bundleID,
+                        role: "\(error)"
+                    )
+                }
                 DispatchQueue.main.async {
                     self?.finishSession(session.id, announceStop: false)
                 }
@@ -999,9 +1070,14 @@ final class AppModel: ObservableObject {
         announceStop: Bool,
         noticeMessage: String? = nil
     ) {
-        guard activeSession?.id == id else { return }
+        guard let session = activeSession, session.id == id else { return }
+        let wasHold = session.role == .hold
         activeSession = nil
-        sessionCooldownUntil = Date().addingTimeInterval(sessionCooldown)
+        if wasHold {
+            sessionCooldownUntil = Date().addingTimeInterval(sessionCooldown)
+        } else {
+            sessionCooldownUntil = .distantPast
+        }
         status = hasRequiredPermissions ? .ready : .permission
         syncMonitorConfiguration()
         if announceStop {
@@ -1013,18 +1089,23 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func cancelActiveSession(announce: Bool = false) {
+    private func cancelActiveSession(
+        announce: Bool = false,
+        emitCancelShortcut: Bool = true
+    ) {
         guard let session = activeSession else { return }
         session.cancellation.cancel()
-        if session.phase == .listening {
+        if emitCancelShortcut && session.phase == .listening {
             if session.role == .hold {
                 if session.replacingSelection {
                     _ = selectionRestorer.restore()
                 }
                 try? shortcutEmitter.keyUp(session.shortcut)
             } else {
-                try? shortcutEmitter.tap(session.shortcut)
+                try? shortcutEmitter.tap(KeyboardShortcut(keyCode: 53))
             }
+        } else if session.role == .hold && session.phase == .listening {
+            try? shortcutEmitter.keyUp(session.shortcut)
         }
         selectionRestorer.clear()
         activeSession = nil
@@ -1047,6 +1128,27 @@ final class AppModel: ObservableObject {
         else {
             return
         }
+
+        let bundleID = application.bundleIdentifier ?? ""
+        let isDoubaoOrHelper = AppSettings.doubaoClientBundleIDs.contains(bundleID) ||
+            bundleID == AppSettings.bundleIdentifier ||
+            bundleID.contains("doubao") ||
+            bundleID == "com.bytedance.inputmethod.doubaoime"
+
+        if isDoubaoOrHelper {
+            return
+        }
+
+        let sessionBundle = session.bundleIdentifier ?? ""
+        let sessionWasDoubao = sessionBundle.contains("doubao") ||
+            sessionBundle == "com.bytedance.inputmethod.doubaoime" ||
+            AppSettings.doubaoClientBundleIDs.contains(sessionBundle)
+        if sessionWasDoubao {
+            session.bundleIdentifier = application.bundleIdentifier
+            session.processIdentifier = application.processIdentifier
+            return
+        }
+
         let changedProcess = session.processIdentifier != application.processIdentifier
         let changedBundle = session.bundleIdentifier != application.bundleIdentifier
         if changedProcess || changedBundle {
@@ -1054,7 +1156,8 @@ final class AppModel: ObservableObject {
                 "focus_changed",
                 bundleIdentifier: application.bundleIdentifier
             )
-            cancelActiveSession(announce: true)
+            // Emit cancel shortcut (ESC) so Doubao cleanly aborts and is never left recording across apps!
+            cancelActiveSession(announce: true, emitCancelShortcut: true)
         }
     }
 
@@ -1072,7 +1175,7 @@ final class AppModel: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 DispatchQueue.main.async {
-                    self?.cancelActiveSession(announce: true)
+                    self?.cancelActiveSession(announce: true, emitCancelShortcut: false)
                 }
             }
             lifecycleObservers.append(observer)
@@ -1083,7 +1186,7 @@ final class AppModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.cancelActiveSession(announce: false)
+                self?.cancelActiveSession(announce: false, emitCancelShortcut: false)
             }
         }
         lifecycleObservers.append(terminate)

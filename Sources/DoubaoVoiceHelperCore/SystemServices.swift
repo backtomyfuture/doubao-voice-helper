@@ -54,7 +54,7 @@ public enum ShortcutEmitterError: Error {
 public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
     private let tapDuration: useconds_t
 
-    public init(tapDurationMilliseconds: UInt32 = 50) {
+    public init(tapDurationMilliseconds: UInt32 = 35) {
         tapDuration = useconds_t(tapDurationMilliseconds * 1_000)
     }
 
@@ -117,7 +117,6 @@ public final class CoreGraphicsShortcutEmitter: ShortcutEmitting {
             event.type = .flagsChanged
         }
         event.post(tap: .cghidEventTap)
-        event.post(tap: .cgSessionEventTap)
     }
 }
 

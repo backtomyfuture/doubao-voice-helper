@@ -103,11 +103,6 @@ struct OnboardingView: View {
                 Text("等待按键…")
                     .foregroundStyle(.secondary)
             }
-            if role == .hold {
-                Text("点一下左键即可，不必长按。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
             Button("暂时跳过") {
                 model.skipOnboardingConfirm(for: role)
             }

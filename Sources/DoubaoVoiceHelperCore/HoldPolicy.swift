@@ -95,6 +95,23 @@ public enum HoldStartEvaluator {
         "AXDisclosureTriangle",
         "AXIncrementor",
         "AXTab",
+        "AXWindow",
+        "AXToolbar",
+        "AXSplitter",
+        "AXSplitGroup",
+        "AXScrollArea",
+        "AXOutline",
+        "AXTable",
+        "AXRow",
+        "AXColumn",
+        "AXCell",
+        "AXImage",
+        "AXMenuBar",
+        "AXMenu",
+        "AXTitleBar",
+        "AXDrawer",
+        "AXSheet",
+        "AXDialog",
     ]
 
     public static func decision(
@@ -127,9 +144,9 @@ public enum HoldTargetProbe {
     ) -> HoldStartDecision {
         if bundleIdentifier == WeChatInputRegion.bundleID {
             switch wechatRegion(point: point, processIdentifier: processIdentifier) {
-            case .sidebar:
+            case .sidebar, .unknown:
                 return .veto
-            case .composer, .unknown:
+            case .composer:
                 return .start
             }
         }
@@ -137,7 +154,7 @@ public enum HoldTargetProbe {
         let app = AXUIElementCreateApplication(processIdentifier)
         AXUIElementSetMessagingTimeout(app, HoldPolicy.probeTimeout)
         guard let hit = element(at: point, app: app) else {
-            return .start
+            return .veto
         }
         let hitRole = role(of: hit)
         var ancestors: [String] = []
@@ -185,7 +202,10 @@ public enum HoldTargetProbe {
             if WeChatInputRegion.isSidebar(point, inWindow: frame) {
                 return .sidebar
             }
-            return .composer
+            if WeChatInputRegion.contains(point, inWindow: frame) {
+                return .composer
+            }
+            return .unknown
         }
         return .unknown
     }

@@ -98,7 +98,7 @@ struct SettingsView: View {
                 MouseMappingRow(role: .enter)
                     .environmentObject(model)
                 Text(
-                    "默认：左键长按为按住式语音；前进键为切换式语音；后退键发送 Return。点击“录制按键”可直接按鼠标按键进行更换。"
+                    "默认：前进键为切换式语音；后退键发送 Return。左键长按已默认禁用以彻底避免拖拽窗口和选择文本误触。点击“录制按键”可绑定侧键更换。"
                 )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -479,12 +479,22 @@ private struct MouseMappingRow: View {
                     }
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button {
-                        model.beginMouseButtonCapture(for: role)
-                    } label: {
-                        Label("录制按键", systemImage: "hand.tap")
+                    HStack(spacing: 6) {
+                        Button {
+                            model.beginMouseButtonCapture(for: role)
+                        } label: {
+                            Label("录制按键", systemImage: "hand.tap")
+                        }
+                        .buttonStyle(.bordered)
+
+                        if model.mouseBinding(for: role).button > 1 {
+                            Button("清空") {
+                                model.setMouseButton(-1, for: role)
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                        }
                     }
-                    .buttonStyle(.bordered)
                 }
             }
 

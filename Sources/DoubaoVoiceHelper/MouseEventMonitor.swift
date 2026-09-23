@@ -158,14 +158,7 @@ final class MouseEventMonitor {
             .otherMouseDown,
             .otherMouseUp,
             .otherMouseDragged,
-            .leftMouseDown,
-            .leftMouseUp,
-            .leftMouseDragged,
-            .rightMouseDown,
-            .rightMouseUp,
-            .rightMouseDragged,
             .keyDown,
-            .mouseMoved,
         ]
         let mask = eventTypes.reduce(CGEventMask(0)) { result, type in
             result | (CGEventMask(1) << type.rawValue)
@@ -235,6 +228,7 @@ final class MouseEventMonitor {
         for button: Int64,
         configuration: Configuration
     ) -> MouseBindingRole? {
+        guard button > 1 else { return nil }
         if button == configuration.holdButton {
             return .hold
         }
@@ -254,7 +248,7 @@ final class MouseEventMonitor {
     }
 
     private func passesThroughPrimaryButton(_ button: Int64) -> Bool {
-        button == 0 || button == 1
+        button <= 1
     }
 
     private func hasBlockingModifiers(_ event: CGEvent) -> Bool {
@@ -287,6 +281,7 @@ final class MouseEventMonitor {
         processIdentifier: pid_t,
         wechatPreemptEnabled: Bool
     ) {
+        guard button > 1 else { return }
         lock.lock()
         var state = pressStates[button, default: PressState()]
         if state.work != nil || state.isLong || state.tracking {
@@ -852,25 +847,24 @@ final class MouseEventMonitor {
                         location: NSEvent.mouseLocation
                     )
                 )
-                return nil
+                // Do not swallow physical ESC: allow it to pass through to active app / Doubao IME
+                // so a single ESC press resets both the Helper and Doubao's UI.
+                return Unmanaged.passUnretained(event)
             }
             return Unmanaged.passUnretained(event)
         }
 
-        let isDragged = type == .otherMouseDragged ||
-            type == .leftMouseDragged ||
-            type == .rightMouseDragged
-        let isDown = type == .otherMouseDown ||
-            type == .leftMouseDown ||
-            type == .rightMouseDown
-        let isUp = type == .otherMouseUp ||
-            type == .leftMouseUp ||
-            type == .rightMouseUp
+        let isDragged = type == .otherMouseDragged
+        let isDown = type == .otherMouseDown
+        let isUp = type == .otherMouseUp
         guard isDragged || isDown || isUp else {
             return Unmanaged.passUnretained(event)
         }
 
         let button = event.getIntegerValueField(.mouseEventButtonNumber)
+        guard button > 1 else {
+            return Unmanaged.passUnretained(event)
+        }
         let passesThrough = monitor.passesThroughPrimaryButton(button)
         if monitor.isReplaying(button) {
             return Unmanaged.passUnretained(event)
