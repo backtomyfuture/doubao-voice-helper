@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Version Tag (e.g. v0.1.1)'
+        description: 'Release Version Tag (e.g. v0.2.0)'
         required: true
-        default: 'v0.1.1'
+        default: 'v0.2.0'
 
 permissions:
   contents: write
@@ -17,13 +17,20 @@ permissions:
 jobs:
   build-and-release:
     name: Build and Release macOS App
-    runs-on: macos-14
+    # Package.swift uses swift-tools-version 6.0 (Swift 6 language mode),
+    # which needs Xcode 16 or newer.
+    runs-on: macos-15
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Show Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Determine Version
         id: version
@@ -39,6 +46,7 @@ jobs:
           echo "version=$RAW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version $RAW_VERSION ($TAG)..."
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RAW_VERSION" Resources/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Resources/Info.plist
 
       - name: Run Unit Tests
         run: |
@@ -86,19 +94,86 @@ jobs:
           echo "CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           rm -f "$P12_PATH"
 
+      # Optional: when a Developer ID certificate is configured it replaces the
+      # self-signed identity and the build is notarized. Switching identity
+      # changes the designated requirement, so existing users must install that
+      # first Developer ID release manually (the in-app updater rejects it).
+      - name: Install Developer ID Certificate
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+        run: |
+          if [ -z "${DEVELOPER_ID_P12_BASE64:-}" ] || [ -z "${DEVELOPER_ID_IDENTITY:-}" ]; then
+            echo "No Developer ID configured, keeping the self-signed identity."
+            exit 0
+          fi
+          KEYCHAIN_PATH="${CODESIGN_KEYCHAIN:-$RUNNER_TEMP/developer-id.keychain}"
+          if [ ! -f "$KEYCHAIN_PATH" ]; then
+            security create-keychain -p "$DEVELOPER_ID_P12_PASSWORD" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$DEVELOPER_ID_P12_PASSWORD" "$KEYCHAIN_PATH"
+            EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+            security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
+            echo "CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+            KEYCHAIN_PASSWORD="$DEVELOPER_ID_P12_PASSWORD"
+          else
+            KEYCHAIN_PASSWORD="${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}"
+          fi
+          P12_PATH="$RUNNER_TEMP/developer-id.p12"
+          echo "$DEVELOPER_ID_P12_BASE64" | base64 --decode > "$P12_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$P12_PATH"
+          echo "CODESIGN_IDENTITY=$DEVELOPER_ID_IDENTITY" >> "$GITHUB_ENV"
+
       - name: Build Application (.app)
         env:
           CONFIGURATION: "release"
         run: |
           ./scripts/build_app.sh
 
+      - name: Notarize Application
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APP_SPECIFIC_PASSWORD }}
+        run: |
+          case "${CODESIGN_IDENTITY:-}" in
+            "Developer ID Application:"*) ;;
+            *) echo "Not signed with Developer ID, skipping notarization."; exit 0 ;;
+          esac
+          if [ -z "${NOTARY_APPLE_ID:-}" ] || [ -z "${NOTARY_TEAM_ID:-}" ] || [ -z "${NOTARY_PASSWORD:-}" ]; then
+            echo "Notary credentials missing, skipping notarization."
+            exit 0
+          fi
+          ditto -c -k --keepParent "build/DoubaoVoiceHelper.app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" \
+            --wait
+          xcrun stapler staple "build/DoubaoVoiceHelper.app"
+          echo "NOTARIZED=1" >> "$GITHUB_ENV"
+
       - name: Package Distribution ZIP
         run: |
           ditto -c -k --keepParent "build/DoubaoVoiceHelper.app" "build/DoubaoVoiceHelper.zip"
 
       - name: Package Distribution DMG
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APP_SPECIFIC_PASSWORD }}
         run: |
           ./scripts/build_dmg.sh
+          if [ "${NOTARIZED:-}" = "1" ]; then
+            codesign --force --timestamp --sign "$CODESIGN_IDENTITY" ${CODESIGN_KEYCHAIN:+--keychain "$CODESIGN_KEYCHAIN"} "build/DoubaoVoiceHelper.dmg"
+            xcrun notarytool submit "build/DoubaoVoiceHelper.dmg" \
+              --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" \
+              --wait
+            xcrun stapler staple "build/DoubaoVoiceHelper.dmg"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

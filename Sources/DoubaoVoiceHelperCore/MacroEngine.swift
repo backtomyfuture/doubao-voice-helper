@@ -29,23 +29,64 @@ public struct MacroValidationIssue: Equatable, Sendable {
     }
 }
 
+/// Deterministic literal replacement for dictated text.
+///
+/// - A rule source may list aliases separated by `|` (e.g. `斜杠|写杠`) so that
+///   common homophone mis-recognitions map to the same output.
+/// - Punctuation and spaces that the recognizer inserts are ignored while
+///   matching; those inside a matched span are consumed with it.
+/// - When every meaningful character of the utterance is covered by matches,
+///   the output is only the concatenated replacements, so `斜杠批准。`
+///   becomes `/approve` instead of `/approve。`.
 public struct MacroEngine: Sendable {
+    public static let aliasSeparator: Character = "|"
+
+    static let ignorableCharacters: Set<Character> = [
+        "，", "、", "。", "！", "？", "；", "：",
+        ",", ".", "!", "?", ";", ":",
+        " ", "\u{3000}", "\t", "\n", "\r",
+    ]
+
     public init() {}
 
-    private static func normalize(_ text: String) -> String {
-        return text.replacingOccurrences(of: "，", with: "")
-            .replacingOccurrences(of: "、", with: "")
-            .replacingOccurrences(of: "。", with: "")
-            .replacingOccurrences(of: " ", with: "")
+    public static func aliases(of source: String) -> [String] {
+        source
+            .split(separator: aliasSeparator)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func normalizedCharacters(_ text: String) -> [Character] {
+        text.filter { !ignorableCharacters.contains($0) }.map { $0 }
+    }
+
+    private struct Candidate {
+        let pattern: [Character]
+        let replacement: String
+    }
+
+    private struct Match {
+        let start: Int
+        let length: Int
+        let replacement: String
     }
 
     public func apply(_ input: String, rules: [MacroRule]) -> MacroResult {
         let candidates = rules
+            .filter(\.isEnabled)
+            .flatMap { rule in
+                Self.aliases(of: rule.source).map {
+                    Candidate(
+                        pattern: Self.normalizedCharacters($0),
+                        replacement: rule.replacement
+                    )
+                }
+            }
+            .filter { !$0.pattern.isEmpty }
             .enumerated()
-            .filter { $0.element.isEnabled && !$0.element.source.isEmpty }
             .sorted {
-                if $0.element.source.count != $1.element.source.count {
-                    return $0.element.source.count > $1.element.source.count
+                if $0.element.pattern.count != $1.element.pattern.count {
+                    return $0.element.pattern.count > $1.element.pattern.count
                 }
                 return $0.offset < $1.offset
             }
@@ -55,107 +96,78 @@ public struct MacroEngine: Sendable {
             return MacroResult(output: input, matchCount: 0)
         }
 
-        let normalizedInput = Self.normalize(input)
-
-        // 如果输入归一化后未改变，按原始逻辑精确匹配（快速路径）
-        if normalizedInput == input {
-            return applyExact(input, candidates: candidates)
+        var characters: [Character] = []
+        var originalIndices: [String.Index] = []
+        for index in input.indices where !Self.ignorableCharacters.contains(input[index]) {
+            characters.append(input[index])
+            originalIndices.append(index)
         }
 
-        // 构建归一化到原始的索引映射：normalizedIndexMap[i] = 归一化字符串第 i 个字符在原始字符串中的索引
-        var normalizedChars: [Character] = []
-        var normalizedToOriginal: [String.Index] = []
-        for idx in input.indices {
-            let ch = input[idx]
-            if Self.normalize(String(ch)) != "" {
-                normalizedChars.append(ch)
-                normalizedToOriginal.append(idx)
+        var matches: [Match] = []
+        var position = 0
+        while position < characters.count {
+            let hit = candidates.first { candidate in
+                let end = position + candidate.pattern.count
+                return end <= characters.count &&
+                    characters[position..<end].elementsEqual(candidate.pattern)
             }
-        }
-
-        let normalizedSources = candidates.map { Self.normalize($0.source) }
-
-        var result = String()
-        var nIdx = 0 // 归一化字符串中的位置
-        var origConsumedUpTo = input.startIndex // 原始字符串中已消费到的位置
-        var matchCount = 0
-
-        while nIdx < normalizedChars.count {
-            var matched = false
-            for (i, rule) in candidates.enumerated() {
-                let ns = normalizedSources[i]
-                guard !ns.isEmpty, nIdx + ns.count <= normalizedChars.count else { continue }
-
-                let slice = normalizedChars[nIdx..<(nIdx + ns.count)]
-                guard String(slice) == ns else { continue }
-
-                // 匹配成功：先输出原始字符串中从 origConsumedUpTo 到匹配起始位置之间的原始字符
-                let matchOrigStart = normalizedToOriginal[nIdx]
-                if matchOrigStart > origConsumedUpTo {
-                    result.append(contentsOf: input[origConsumedUpTo..<matchOrigStart])
-                }
-
-                result.append(contentsOf: rule.replacement)
-
-                // 更新消费位置
-                let lastMatchedOrigIdx = normalizedToOriginal[nIdx + ns.count - 1]
-                origConsumedUpTo = input.index(after: lastMatchedOrigIdx)
-                nIdx += ns.count
-                matchCount += 1
-                matched = true
-                break
-            }
-            if !matched {
-                nIdx += 1
-            }
-        }
-
-        if matchCount > 0 {
-            // 输出剩余的原始字符
-            if origConsumedUpTo < input.endIndex {
-                result.append(contentsOf: input[origConsumedUpTo...])
-            }
-            return MacroResult(output: result, matchCount: matchCount)
-        }
-
-        return MacroResult(output: input, matchCount: 0)
-    }
-
-    private func applyExact(_ input: String, candidates: [MacroRule]) -> MacroResult {
-        var result = String()
-        var index = input.startIndex
-        var matchCount = 0
-
-        while index < input.endIndex {
-            let remainder = input[index...]
-            if let rule = candidates.first(where: {
-                remainder.hasPrefix($0.source)
-            }) {
-                result.append(contentsOf: rule.replacement)
-                index = input.index(index, offsetBy: rule.source.count)
-                matchCount += 1
+            if let hit {
+                matches.append(
+                    Match(
+                        start: position,
+                        length: hit.pattern.count,
+                        replacement: hit.replacement
+                    )
+                )
+                position += hit.pattern.count
             } else {
-                result.append(input[index])
-                index = input.index(after: index)
+                position += 1
             }
         }
 
-        return MacroResult(output: result, matchCount: matchCount)
+        guard !matches.isEmpty else {
+            return MacroResult(output: input, matchCount: 0)
+        }
+
+        let covered = matches.reduce(0) { $0 + $1.length }
+        if covered == characters.count {
+            return MacroResult(
+                output: matches.map(\.replacement).joined(),
+                matchCount: matches.count
+            )
+        }
+
+        var output = String()
+        var consumedUpTo = input.startIndex
+        for match in matches {
+            let start = originalIndices[match.start]
+            let last = originalIndices[match.start + match.length - 1]
+            output.append(contentsOf: input[consumedUpTo..<start])
+            output.append(contentsOf: match.replacement)
+            consumedUpTo = input.index(after: last)
+        }
+        output.append(contentsOf: input[consumedUpTo...])
+        return MacroResult(output: output, matchCount: matches.count)
     }
 
     public func validate(_ rules: [MacroRule]) -> [MacroValidationIssue] {
         var issues: [MacroValidationIssue] = []
-        var seenSources = Set<String>()
+        var seen = Set<String>()
 
         for rule in rules {
-            if rule.source.isEmpty {
-                issues.append(
-                    MacroValidationIssue(kind: .emptySource, ruleID: rule.id)
-                )
-            } else if !seenSources.insert(rule.source).inserted {
-                issues.append(
-                    MacroValidationIssue(kind: .duplicateSource, ruleID: rule.id)
-                )
+            let patterns = Self.aliases(of: rule.source)
+                .map { String(Self.normalizedCharacters($0)) }
+                .filter { !$0.isEmpty }
+            if patterns.isEmpty {
+                issues.append(MacroValidationIssue(kind: .emptySource, ruleID: rule.id))
+                continue
+            }
+            var duplicate = false
+            for pattern in patterns where !seen.insert(pattern).inserted {
+                duplicate = true
+            }
+            if duplicate {
+                issues.append(MacroValidationIssue(kind: .duplicateSource, ruleID: rule.id))
             }
         }
 

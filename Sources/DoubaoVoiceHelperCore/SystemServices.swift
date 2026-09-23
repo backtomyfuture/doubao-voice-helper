@@ -28,8 +28,10 @@ public final class PermissionService {
 
     @discardableResult
     public func requestAccessibility() -> Bool {
+        // Value of kAXTrustedCheckOptionPrompt; the imported global is a
+        // mutable C variable that Swift 6 rejects as shared state.
         let options = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true,
+            "AXTrustedCheckOptionPrompt": true,
         ] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
@@ -40,7 +42,7 @@ public final class PermissionService {
     }
 }
 
-public protocol ShortcutEmitting {
+public protocol ShortcutEmitting: Sendable {
     func tap(_ shortcut: KeyboardShortcut) throws
     func keyDown(_ shortcut: KeyboardShortcut) throws
     func keyUp(_ shortcut: KeyboardShortcut) throws

@@ -51,7 +51,7 @@ struct OnboardingView: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("本 App 不录音，也不做语音识别。")
-            Text("它只把三颗鼠标键映射到豆包：前进键切换语音，左键长按按住说话，后退键发送回车。")
+            Text("它把鼠标侧键映射到豆包：前进键切换语音，后退键发送回车；按住说话可在设置里绑定到另一颗侧键或中键。")
             Text("非浏览器里，后退键会直接发送。浏览器、Finder 里前进后退仍是系统导航。")
                 .foregroundStyle(.secondary)
             Button("继续") {

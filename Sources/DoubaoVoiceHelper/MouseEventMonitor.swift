@@ -38,6 +38,14 @@ enum MouseBindingRole: Equatable {
         case .escape: return "escape"
         }
     }
+
+    var sessionRole: SessionRole? {
+        switch self {
+        case .toggle: return .toggle
+        case .hold: return .hold
+        default: return nil
+        }
+    }
 }
 
 struct MouseButtonEvent {
@@ -47,7 +55,6 @@ struct MouseButtonEvent {
     let bundleIdentifier: String?
     let processIdentifier: pid_t
     let location: CGPoint
-    let preservesSelection: Bool
 
     init(
         button: Int64,
@@ -55,8 +62,7 @@ struct MouseButtonEvent {
         role: MouseBindingRole,
         bundleIdentifier: String?,
         processIdentifier: pid_t,
-        location: CGPoint = .zero,
-        preservesSelection: Bool = false
+        location: CGPoint = .zero
     ) {
         self.button = button
         self.kind = kind
@@ -64,7 +70,6 @@ struct MouseButtonEvent {
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
         self.location = location
-        self.preservesSelection = preservesSelection
     }
 }
 
@@ -73,7 +78,12 @@ enum MouseEventMonitorError: Error {
     case eventTapCreationFailed
 }
 
-final class MouseEventMonitor {
+/// Intercepts the configured extra mouse buttons (button number > 1). Left and
+/// right buttons are never observed. Keyboard events are observed only while
+/// a dictation session is active, and only to notice Esc.
+/// Shared between the main thread, the event-tap thread and helper queues;
+/// all mutable state is guarded by `lock`.
+final class MouseEventMonitor: @unchecked Sendable {
     struct Configuration {
         var toggleButton: Int64
         var holdButton: Int64
@@ -82,57 +92,49 @@ final class MouseEventMonitor {
         var holdExcludedBundleIDs: [String]
         var paused: Bool
         var capturing: Bool
-        var wechatHoldPreemptEnabled: Bool
-        var swallowEscape: Bool
+        var listensForEscape: Bool
     }
 
     private static let syntheticEventTag: Int64 = 0x4442484C5054
+    private static let escapeKeyCode: Int64 = 53
 
-    private let callbackHandler: (MouseButtonEvent) -> Void
+    private let callbackHandler: @Sendable (MouseButtonEvent) -> Void
     private let selectionRestorer: AXSelectionRestorer
     private let lock = NSLock()
     private var configuration: Configuration
-    private var eventTap: CFMachPort?
+    private var mouseTap: CFMachPort?
+    private var keyTap: CFMachPort?
     private var runLoop: CFRunLoop?
     private var thread: Thread?
+    private var frontmostBundleIdentifier: String?
+    private var frontmostProcessIdentifier: pid_t = 0
+    private var workspaceObserver: NSObjectProtocol?
     private let probeQueue = DispatchQueue(
         label: "com.jarod.doubao-voice-helper.hold-probe",
         qos: .userInitiated
     )
-    private struct PressState {
-        var generation: UInt64 = 0
-        var work: DispatchWorkItem?
-        var preemptWork: DispatchWorkItem?
-        var isLong = false
-        var tracking = false
-        var origin = CGPoint.zero
-        var quartzPoint = CGPoint.zero
-        var bundleIdentifier: String?
-        var processIdentifier: pid_t = 0
-        var decision: HoldStartDecision?
-        var preempted = false
-        var startedAt: TimeInterval = 0
-        var deferredDown = false
-        var deliveredDown = false
-    }
-    private var pressStates: [Int64: PressState] = [:]
-    private var replayingButton: Int64?
-    private var physicalPoller: DispatchSourceTimer?
-    private var movePoller: DispatchSourceTimer?
     private let navigationQueue = DispatchQueue(
         label: "com.jarod.doubao-voice-helper.navigation",
         qos: .userInteractive
     )
-    private lazy var syntheticSource: CGEventSource? = {
-        let source = CGEventSource(stateID: .hidSystemState)
-        source?.userData = Self.syntheticEventTag
-        return source
-    }()
+
+    private struct PressState {
+        var generation: UInt64 = 0
+        var work: DispatchWorkItem?
+        var isLong = false
+        var tracking = false
+        var origin = CGPoint.zero
+        var bundleIdentifier: String?
+        var processIdentifier: pid_t = 0
+        var decision: HoldStartDecision?
+    }
+    private var pressStates: [Int64: PressState] = [:]
+    private var replayingButton: Int64?
 
     init(
         configuration: Configuration,
         selectionRestorer: AXSelectionRestorer,
-        callbackHandler: @escaping (MouseButtonEvent) -> Void
+        callbackHandler: @escaping @Sendable (MouseButtonEvent) -> Void
     ) {
         self.configuration = configuration
         self.selectionRestorer = selectionRestorer
@@ -141,64 +143,83 @@ final class MouseEventMonitor {
 
     deinit {
         stop()
+        if let workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+        }
     }
 
     func update(configuration: Configuration) {
         lock.lock()
         self.configuration = configuration
+        let keyTap = self.keyTap
         lock.unlock()
+        if let keyTap {
+            CGEvent.tapEnable(tap: keyTap, enable: configuration.listensForEscape)
+        }
     }
 
     func start() throws {
-        guard eventTap == nil else {
+        guard mouseTap == nil else {
             throw MouseEventMonitorError.alreadyStarted
         }
 
-        let eventTypes: [CGEventType] = [
-            .otherMouseDown,
-            .otherMouseUp,
-            .otherMouseDragged,
-            .keyDown,
-        ]
-        let mask = eventTypes.reduce(CGEventMask(0)) { result, type in
-            result | (CGEventMask(1) << type.rawValue)
-        }
-        guard let tap = CGEvent.tapCreate(
+        trackFrontmostApplication()
+
+        let mouseMask = [CGEventType.otherMouseDown, .otherMouseUp, .otherMouseDragged]
+            .reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+        let refcon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        guard let mouseTap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { proxy, type, event, refcon in
-                MouseEventMonitor.handleTap(
-                    proxy,
-                    type: type,
-                    event: event,
-                    refcon: refcon
-                )
+            eventsOfInterest: mouseMask,
+            callback: { _, type, event, refcon in
+                MouseEventMonitor.handleMouseTap(type: type, event: event, refcon: refcon)
             },
-            userInfo: UnsafeMutableRawPointer(
-                Unmanaged.passUnretained(self).toOpaque()
-            )
+            userInfo: refcon
         ) else {
             throw MouseEventMonitorError.eventTapCreationFailed
         }
 
-        eventTap = tap
-        let source = CFMachPortCreateRunLoopSource(
-            kCFAllocatorDefault,
-            tap,
-            0
+        // Esc support is optional; the app keeps working if this tap cannot be
+        // created.
+        let keyTap = CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .tailAppendEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1) << CGEventType.keyDown.rawValue,
+            callback: { _, type, event, refcon in
+                MouseEventMonitor.handleKeyTap(type: type, event: event, refcon: refcon)
+            },
+            userInfo: refcon
+        )
+
+        lock.lock()
+        self.mouseTap = mouseTap
+        self.keyTap = keyTap
+        let listensForEscape = configuration.listensForEscape
+        lock.unlock()
+
+        let setup = TapThreadSetup(
+            sources: [mouseTap, keyTap].compactMap { $0 }.compactMap {
+                CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
+            },
+            mouseTap: mouseTap,
+            keyTap: keyTap
         )
         thread = Thread { [weak self] in
             guard let self else { return }
             let currentRunLoop = CFRunLoopGetCurrent()
+            self.lock.lock()
             self.runLoop = currentRunLoop
-            CFRunLoopAddSource(
-                currentRunLoop,
-                source,
-                .commonModes
-            )
-            CGEvent.tapEnable(tap: tap, enable: true)
+            self.lock.unlock()
+            for source in setup.sources {
+                CFRunLoopAddSource(currentRunLoop, source, .commonModes)
+            }
+            CGEvent.tapEnable(tap: setup.mouseTap, enable: true)
+            if let keyTap = setup.keyTap {
+                CGEvent.tapEnable(tap: keyTap, enable: listensForEscape)
+            }
             CFRunLoopRun()
         }
         thread?.name = "com.jarod.doubao-voice-helper.mouse-events"
@@ -207,16 +228,61 @@ final class MouseEventMonitor {
 
     func stop() {
         cancelAllPresses()
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
+        lock.lock()
+        let taps = [mouseTap, keyTap].compactMap { $0 }
+        let runLoop = self.runLoop
+        mouseTap = nil
+        keyTap = nil
+        self.runLoop = nil
+        lock.unlock()
+        for tap in taps {
+            CGEvent.tapEnable(tap: tap, enable: false)
         }
         if let runLoop {
             CFRunLoopStop(runLoop)
         }
-        eventTap = nil
-        runLoop = nil
         thread = nil
     }
+
+    /// CF objects handed to the tap thread once, before it starts.
+    private struct TapThreadSetup: @unchecked Sendable {
+        let sources: [CFRunLoopSource]
+        let mouseTap: CFMachPort
+        let keyTap: CFMachPort?
+    }
+
+    // MARK: - Frontmost application
+
+    /// Cached so the event tap callback never has to query NSWorkspace.
+    private func trackFrontmostApplication() {
+        setFrontmost(NSWorkspace.shared.frontmostApplication)
+        guard workspaceObserver == nil else { return }
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            let application = notification.userInfo?[
+                NSWorkspace.applicationUserInfoKey
+            ] as? NSRunningApplication
+            self?.setFrontmost(application)
+        }
+    }
+
+    private func setFrontmost(_ application: NSRunningApplication?) {
+        lock.lock()
+        frontmostBundleIdentifier = application?.bundleIdentifier
+        frontmostProcessIdentifier = application?.processIdentifier ?? 0
+        lock.unlock()
+    }
+
+    private func frontmost() -> (bundleIdentifier: String?, processIdentifier: pid_t) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (frontmostBundleIdentifier, frontmostProcessIdentifier)
+    }
+
+    // MARK: - State helpers
 
     private func currentConfiguration() -> Configuration {
         lock.lock()
@@ -229,15 +295,9 @@ final class MouseEventMonitor {
         configuration: Configuration
     ) -> MouseBindingRole? {
         guard button > 1 else { return nil }
-        if button == configuration.holdButton {
-            return .hold
-        }
-        if button == configuration.toggleButton {
-            return .toggle
-        }
-        if button == configuration.enterButton {
-            return .enter
-        }
+        if button == configuration.holdButton { return .hold }
+        if button == configuration.toggleButton { return .toggle }
+        if button == configuration.enterButton { return .enter }
         return nil
     }
 
@@ -245,10 +305,6 @@ final class MouseEventMonitor {
         lock.lock()
         defer { lock.unlock() }
         return replayingButton == button
-    }
-
-    private func passesThroughPrimaryButton(_ button: Int64) -> Bool {
-        button <= 1
     }
 
     private func hasBlockingModifiers(_ event: CGEvent) -> Bool {
@@ -264,24 +320,21 @@ final class MouseEventMonitor {
         for button in pressStates.keys {
             pressStates[button]?.generation &+= 1
             pressStates[button]?.work?.cancel()
-            pressStates[button]?.preemptWork?.cancel()
         }
         pressStates.removeAll()
         replayingButton = nil
         lock.unlock()
-        stopPhysicalPoller()
-        stopMovePoller()
     }
+
+    // MARK: - Hold detection
 
     private func armPress(
         button: Int64,
         origin: CGPoint,
         quartzPoint: CGPoint,
         bundleIdentifier: String?,
-        processIdentifier: pid_t,
-        wechatPreemptEnabled: Bool
+        processIdentifier: pid_t
     ) {
-        guard button > 1 else { return }
         lock.lock()
         var state = pressStates[button, default: PressState()]
         if state.work != nil || state.isLong || state.tracking {
@@ -290,52 +343,30 @@ final class MouseEventMonitor {
         }
         state.generation &+= 1
         let generation = state.generation
-        state.work?.cancel()
-        state.preemptWork?.cancel()
         state.isLong = false
         state.tracking = true
         state.origin = origin
-        state.quartzPoint = quartzPoint
         state.bundleIdentifier = bundleIdentifier
         state.processIdentifier = processIdentifier
         state.decision = nil
-        state.preempted = false
-        state.startedAt = ProcessInfo.processInfo.systemUptime
-        state.deferredDown = false
-        state.deliveredDown = true
         let work = DispatchWorkItem { [weak self] in
-            self?.fireHoldIfNeeded(
-                button: button,
-                generation: generation
-            )
+            self?.fireHoldIfNeeded(button: button, generation: generation)
         }
         state.work = work
         pressStates[button] = state
         lock.unlock()
 
-        selectionRestorer.capture(
-            processIdentifier: processIdentifier,
-            bundleIdentifier: bundleIdentifier
-        )
-
-        let isWeChat = wechatPreemptEnabled &&
-            button == 0 &&
-            bundleIdentifier == WeChatInputRegion.bundleID
-        if isWeChat {
-            scheduleWeChatPreempt(
-                button: button,
-                generation: generation,
-                quartzPoint: quartzPoint
-            )
-        }
-
         probeQueue.async { [weak self] in
+            guard let self else { return }
+            self.selectionRestorer.capture(
+                processIdentifier: processIdentifier,
+                bundleIdentifier: bundleIdentifier
+            )
             let decision = HoldTargetProbe.decision(
                 point: quartzPoint,
                 processIdentifier: processIdentifier,
                 bundleIdentifier: bundleIdentifier
             )
-            guard let self else { return }
             self.lock.lock()
             guard var live = self.pressStates[button],
                   live.generation == generation
@@ -347,8 +378,6 @@ final class MouseEventMonitor {
             if decision == .veto {
                 live.work?.cancel()
                 live.work = nil
-                live.preemptWork?.cancel()
-                live.preemptWork = nil
             }
             let thresholdAlreadyElapsed = live.work == nil &&
                 !live.isLong &&
@@ -365,40 +394,6 @@ final class MouseEventMonitor {
             deadline: .now() + HoldPolicy.threshold,
             execute: work
         )
-        if button == 0 {
-            startMovePoller(button: button, generation: generation)
-        }
-    }
-
-    private func scheduleWeChatPreempt(
-        button: Int64,
-        generation: UInt64,
-        quartzPoint: CGPoint
-    ) {
-        let work = DispatchWorkItem { [weak self] in
-            self?.preemptLeftButton(
-                button: button,
-                generation: generation,
-                quartzPoint: quartzPoint
-            )
-        }
-        lock.lock()
-        guard var state = pressStates[button],
-              state.generation == generation
-        else {
-            lock.unlock()
-            return
-        }
-        state.preemptWork?.cancel()
-        state.preemptWork = work
-        let elapsed = ProcessInfo.processInfo.systemUptime - state.startedAt
-        pressStates[button] = state
-        lock.unlock()
-        let delay = max(0, HoldPolicy.wechatPreemptDelay - elapsed)
-        DispatchQueue.global(qos: .userInteractive).asyncAfter(
-            deadline: .now() + delay,
-            execute: work
-        )
     }
 
     private func fireHoldIfNeeded(button: Int64, generation: UInt64) {
@@ -410,37 +405,21 @@ final class MouseEventMonitor {
             lock.unlock()
             return
         }
-        let decision = state.decision
-        let bundleIdentifier = state.bundleIdentifier
-        let processIdentifier = state.processIdentifier
-        let origin = state.origin
-        let quartzPoint = state.quartzPoint
-        let alreadyPreempted = state.preempted
-        let deferredDown = state.deferredDown
-        if decision == .veto {
-            state.work = nil
+        state.work = nil
+        // A probe that has not answered yet does not block the hold; slow AX
+        // hosts would otherwise delay dictation by seconds.
+        guard state.decision != .veto else {
             pressStates[button] = state
             lock.unlock()
-            deliverDeferredDownIfNeeded(button)
             return
         }
         state.isLong = true
-        state.work = nil
         pressStates[button] = state
+        let bundleIdentifier = state.bundleIdentifier
+        let processIdentifier = state.processIdentifier
+        let origin = state.origin
         lock.unlock()
-        stopMovePoller()
 
-        if button == 0,
-           !alreadyPreempted,
-           !deferredDown,
-           bundleIdentifier == WeChatInputRegion.bundleID
-        {
-            preemptLeftButton(
-                button: button,
-                generation: generation,
-                quartzPoint: quartzPoint
-            )
-        }
         callbackHandler(
             MouseButtonEvent(
                 button: button,
@@ -448,89 +427,14 @@ final class MouseEventMonitor {
                 role: .hold,
                 bundleIdentifier: bundleIdentifier,
                 processIdentifier: processIdentifier,
-                location: origin,
-                preservesSelection: deferredDown
+                location: origin
             )
         )
     }
 
-    private func preemptLeftButton(
-        button: Int64,
-        generation: UInt64,
-        quartzPoint: CGPoint
-    ) {
+    private func emitHoldDragIfLong(button: Int64, location: CGPoint) {
         lock.lock()
-        guard var state = pressStates[button],
-              state.generation == generation,
-              !state.preempted
-        else {
-            lock.unlock()
-            return
-        }
-        guard Self.physicalButtonDown(button) else {
-            lock.unlock()
-            return
-        }
-        state.preempted = true
-        pressStates[button] = state
-        lock.unlock()
-        postSyntheticLeftMouseUp(at: quartzPoint)
-        startPhysicalPoller(button: button, generation: generation)
-    }
-
-    private func postSyntheticLeftMouseUp(
-        at quartzPoint: CGPoint,
-        tap: CGEventTapLocation = .cgSessionEventTap
-    ) {
-        guard let source = syntheticSource else { return }
-        let up = CGEvent(
-            mouseEventSource: source,
-            mouseType: .leftMouseUp,
-            mouseCursorPosition: quartzPoint,
-            mouseButton: .left
-        )
-        up?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
-        up?.post(tap: tap)
-    }
-
-    private func startPhysicalPoller(button: Int64, generation: UInt64) {
-        stopPhysicalPoller()
-        let poller = DispatchSource.makeTimerSource(
-            queue: DispatchQueue.global(qos: .userInteractive)
-        )
-        poller.schedule(
-            deadline: .now() + HoldPolicy.physicalPollInterval,
-            repeating: HoldPolicy.physicalPollInterval
-        )
-        poller.setEventHandler { [weak self] in
-            guard let self else { return }
-            if !Self.physicalButtonDown(button) {
-                self.stopPhysicalPoller()
-                self.releasePress(button, viaPhysicalPoll: true)
-                return
-            }
-            self.emitHoldDragIfLong(button: button, generation: generation)
-        }
-        lock.lock()
-        physicalPoller = poller
-        lock.unlock()
-        poller.resume()
-    }
-
-    private func stopPhysicalPoller() {
-        lock.lock()
-        let poller = physicalPoller
-        physicalPoller = nil
-        lock.unlock()
-        poller?.cancel()
-    }
-
-    private func emitHoldDragIfLong(button: Int64, generation: UInt64) {
-        lock.lock()
-        guard let state = pressStates[button],
-              state.generation == generation,
-              state.isLong
-        else {
+        guard let state = pressStates[button], state.tracking, state.isLong else {
             lock.unlock()
             return
         }
@@ -544,98 +448,33 @@ final class MouseEventMonitor {
                 role: .hold,
                 bundleIdentifier: bundleIdentifier,
                 processIdentifier: processIdentifier,
-                location: NSEvent.mouseLocation
+                location: location
             )
         )
     }
 
-    private func abortPressIfMoved(_ button: Int64, cursor: CGPoint) -> Bool {
+    private func abortPressIfMoved(_ button: Int64, cursor: CGPoint) {
         lock.lock()
-        guard var state = pressStates[button], !state.isLong else {
+        guard var state = pressStates[button], state.tracking, !state.isLong else {
             lock.unlock()
-            return false
+            return
         }
         let distance = hypot(cursor.x - state.origin.x, cursor.y - state.origin.y)
         guard distance > HoldPolicy.preStartMoveTolerance else {
             lock.unlock()
-            return false
+            return
         }
         state.generation &+= 1
         state.work?.cancel()
-        state.preemptWork?.cancel()
         state.work = nil
-        state.preemptWork = nil
+        state.decision = .veto
         pressStates[button] = state
         lock.unlock()
         selectionRestorer.clear()
-        stopMovePoller()
-        return true
-    }
-
-    private func startMovePoller(button: Int64, generation: UInt64) {
-        stopMovePoller()
-        let poller = DispatchSource.makeTimerSource(
-            queue: DispatchQueue.global(qos: .userInteractive)
-        )
-        poller.schedule(
-            deadline: .now() + HoldPolicy.physicalPollInterval,
-            repeating: HoldPolicy.physicalPollInterval
-        )
-        poller.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            let matches = self.pressStates[button]?.generation == generation &&
-                self.pressStates[button]?.tracking == true &&
-                self.pressStates[button]?.isLong == false
-            self.lock.unlock()
-            guard matches else {
-                self.stopMovePoller()
-                return
-            }
-            if self.abortPressIfMoved(button, cursor: NSEvent.mouseLocation) {
-                self.stopMovePoller()
-            }
-        }
-        lock.lock()
-        movePoller = poller
-        lock.unlock()
-        poller.resume()
-    }
-
-    private func stopMovePoller() {
-        lock.lock()
-        let poller = movePoller
-        movePoller = nil
-        lock.unlock()
-        poller?.cancel()
-    }
-
-    private func deliverDeferredDownIfNeeded(_ button: Int64) {
-        lock.lock()
-        guard var state = pressStates[button],
-              state.deferredDown,
-              !state.isLong
-        else {
-            lock.unlock()
-            return
-        }
-        state.deferredDown = false
-        state.deliveredDown = true
-        let origin = state.quartzPoint
-        pressStates[button] = state
-        lock.unlock()
-        postMouseEvent(button: button, isDown: true, at: origin)
-        let current = quartzLocation()
-        if hypot(current.x - origin.x, current.y - origin.y) > 1 {
-            postMouseEvent(button: button, isDown: true, at: current, drag: true)
-        }
     }
 
     private struct PressFinish {
         var wasLong: Bool
-        var wasPreempted: Bool
-        var deferredDown: Bool
-        var deliveredDown: Bool
         var bundleIdentifier: String?
         var processIdentifier: pid_t
         var origin: CGPoint
@@ -649,63 +488,47 @@ final class MouseEventMonitor {
         }
         state.generation &+= 1
         state.work?.cancel()
-        state.preemptWork?.cancel()
         state.work = nil
-        state.preemptWork = nil
         let finish = PressFinish(
             wasLong: state.isLong,
-            wasPreempted: state.preempted,
-            deferredDown: state.deferredDown,
-            deliveredDown: state.deliveredDown,
             bundleIdentifier: state.bundleIdentifier,
             processIdentifier: state.processIdentifier,
             origin: state.origin
         )
         state.isLong = false
         state.tracking = false
-        state.preempted = false
-        state.deferredDown = false
         pressStates[button] = state
         return finish
     }
 
-    private func releasePress(_ button: Int64, viaPhysicalPoll: Bool) {
+    private func releasePress(_ button: Int64, at location: CGPoint) {
         guard let finish = finishPress(button) else { return }
-        stopPhysicalPoller()
-        stopMovePoller()
-        let bundleIdentifier = finish.bundleIdentifier
-        let processIdentifier = finish.processIdentifier
-        let origin = finish.origin
-        if finish.wasPreempted, button == 0, viaPhysicalPoll {
-            postSyntheticLeftMouseUp(at: quartzLocation(), tap: .cghidEventTap)
-        }
-        if !finish.wasLong {
-            selectionRestorer.clear()
-        }
         if finish.wasLong {
             callbackHandler(
                 MouseButtonEvent(
                     button: button,
                     kind: .up,
                     role: .hold,
-                    bundleIdentifier: bundleIdentifier,
-                    processIdentifier: processIdentifier,
-                    location: origin
+                    bundleIdentifier: finish.bundleIdentifier,
+                    processIdentifier: finish.processIdentifier,
+                    location: finish.origin
                 )
             )
-        } else if !passesThroughPrimaryButton(button), !viaPhysicalPoll {
-            replayClick(button: button, at: quartzLocation())
+        } else {
+            selectionRestorer.clear()
+            replayClick(button: button, at: location)
         }
     }
 
-    private func quartzLocation() -> CGPoint {
-        let appKit = NSEvent.mouseLocation
-        let height = NSScreen.screens.first { $0.frame.origin == .zero }?.frame.height
-            ?? NSScreen.main?.frame.height
-            ?? 0
-        return CGPoint(x: appKit.x, y: height - appKit.y)
+    private func isLongPress(_ button: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let state = pressStates[button] else { return false }
+        return state.tracking && state.isLong
     }
 
+    /// Short presses of the hold button were swallowed on the way down, so
+    /// the original click is replayed to keep its native meaning.
     private func replayClick(button: Int64, at location: CGPoint) {
         lock.lock()
         replayingButton = button
@@ -718,51 +541,24 @@ final class MouseEventMonitor {
 
         let source = CGEventSource(stateID: .hidSystemState)
         source?.userData = Self.syntheticEventTag
-        let mouseType: CGEventType
-        let mouseUpType: CGEventType
-        let mouseButton: CGMouseButton
-        switch button {
-        case 0:
-            mouseType = .leftMouseDown
-            mouseUpType = .leftMouseUp
-            mouseButton = .left
-        case 1:
-            mouseType = .rightMouseDown
-            mouseUpType = .rightMouseUp
-            mouseButton = .right
-        default:
-            mouseType = .otherMouseDown
-            mouseUpType = .otherMouseUp
-            mouseButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
-        }
-        let down = CGEvent(
-            mouseEventSource: source,
-            mouseType: mouseType,
-            mouseCursorPosition: location,
-            mouseButton: mouseButton
-        )
-        let up = CGEvent(
-            mouseEventSource: source,
-            mouseType: mouseUpType,
-            mouseCursorPosition: location,
-            mouseButton: mouseButton
-        )
-        down?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
-        up?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
-        if button >= 2 {
-            down?.setIntegerValueField(
-                .mouseEventButtonNumber,
-                value: button
+        let mouseButton = CGMouseButton(rawValue: UInt32(button)) ?? .center
+        for type in [CGEventType.otherMouseDown, .otherMouseUp] {
+            let event = CGEvent(
+                mouseEventSource: source,
+                mouseType: type,
+                mouseCursorPosition: location,
+                mouseButton: mouseButton
             )
-            up?.setIntegerValueField(
-                .mouseEventButtonNumber,
-                value: button
-            )
+            event?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
+            event?.setIntegerValueField(.mouseEventButtonNumber, value: button)
+            event?.post(tap: .cghidEventTap)
         }
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
     }
 
+    // MARK: - Finder
+
+    /// Finder ignores the raw side buttons, so they are translated into its
+    /// navigation shortcuts.
     private func handleFinderNavigation(
         role: MouseBindingRole,
         button: Int64,
@@ -775,10 +571,8 @@ final class MouseEventMonitor {
 
         let shortcut: KeyboardShortcut?
         if role == .enter || (button == 3 && role != .toggle) {
-            // 后退：Cmd + [ (kVK_ANSI_LeftBracket = 33)
             shortcut = KeyboardShortcut(keyCode: 33, modifiers: [.command])
         } else if role == .toggle || (button == 4 && role != .enter) {
-            // 前进：Cmd + ] (kVK_ANSI_RightBracket = 30)
             shortcut = KeyboardShortcut(keyCode: 30, modifiers: [.command])
         } else {
             shortcut = nil
@@ -790,67 +584,81 @@ final class MouseEventMonitor {
 
         if isDown {
             navigationQueue.async {
-                let emitter = CoreGraphicsShortcutEmitter()
-                try? emitter.tap(shortcut)
+                try? CoreGraphicsShortcutEmitter().tap(shortcut)
             }
         }
-
         return true
     }
 
-    private static func physicalButtonDown(_ button: Int64) -> Bool {
-        let mouseButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
-        return CGEventSource.buttonState(.hidSystemState, button: mouseButton)
+    // MARK: - Tap callbacks
+
+    private func reenableTapsIfNeeded() {
+        lock.lock()
+        let mouseTap = self.mouseTap
+        let keyTap = self.keyTap
+        let listensForEscape = configuration.listensForEscape
+        lock.unlock()
+        if let mouseTap {
+            CGEvent.tapEnable(tap: mouseTap, enable: true)
+        }
+        if let keyTap {
+            CGEvent.tapEnable(tap: keyTap, enable: listensForEscape)
+        }
     }
 
-    private static func handleTap(
-        _ proxy: CGEventTapProxy,
+    private static func monitor(from refcon: UnsafeMutableRawPointer?) -> MouseEventMonitor? {
+        guard let refcon else { return nil }
+        return Unmanaged<MouseEventMonitor>.fromOpaque(refcon).takeUnretainedValue()
+    }
+
+    private static func handleKeyTap(
         type: CGEventType,
         event: CGEvent,
         refcon: UnsafeMutableRawPointer?
     ) -> Unmanaged<CGEvent>? {
-        guard let refcon else {
+        guard let monitor = monitor(from: refcon) else {
             return Unmanaged.passUnretained(event)
         }
-        let monitor = Unmanaged<MouseEventMonitor>
-            .fromOpaque(refcon)
-            .takeUnretainedValue()
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            monitor.reenableTapsIfNeeded()
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .keyDown,
+              event.getIntegerValueField(.keyboardEventKeycode) == escapeKeyCode,
+              monitor.currentConfiguration().listensForEscape
+        else {
+            return Unmanaged.passUnretained(event)
+        }
+        // Esc still reaches the focused app and Doubao, so a single press
+        // resets both.
+        monitor.callbackHandler(
+            MouseButtonEvent(
+                button: -1,
+                kind: .down,
+                role: .escape,
+                bundleIdentifier: nil,
+                processIdentifier: 0,
+                location: NSEvent.mouseLocation
+            )
+        )
+        return Unmanaged.passUnretained(event)
+    }
 
-        if event.getIntegerValueField(.eventSourceUserData) == MouseEventMonitor.syntheticEventTag {
+    private static func handleMouseTap(
+        type: CGEventType,
+        event: CGEvent,
+        refcon: UnsafeMutableRawPointer?
+    ) -> Unmanaged<CGEvent>? {
+        guard let monitor = monitor(from: refcon) else {
             return Unmanaged.passUnretained(event)
         }
 
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap = monitor.eventTap {
-                CGEvent.tapEnable(tap: eventTap, enable: true)
-            }
+            monitor.reenableTapsIfNeeded()
             return Unmanaged.passUnretained(event)
         }
 
-        let configuration = monitor.currentConfiguration()
-        if type == .mouseMoved {
-            if monitor.hasDeferredHoldTracking() {
-                _ = monitor.abortPressIfMoved(0, cursor: NSEvent.mouseLocation)
-            }
-            return Unmanaged.passUnretained(event)
-        }
-        if type == .keyDown {
-            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            if configuration.swallowEscape, keyCode == 53 {
-                monitor.callbackHandler(
-                    MouseButtonEvent(
-                        button: -1,
-                        kind: .down,
-                        role: .escape,
-                        bundleIdentifier: nil,
-                        processIdentifier: 0,
-                        location: NSEvent.mouseLocation
-                    )
-                )
-                // Do not swallow physical ESC: allow it to pass through to active app / Doubao IME
-                // so a single ESC press resets both the Helper and Doubao's UI.
-                return Unmanaged.passUnretained(event)
-            }
+        if event.getIntegerValueField(.eventSourceUserData) == syntheticEventTag {
             return Unmanaged.passUnretained(event)
         }
 
@@ -862,16 +670,12 @@ final class MouseEventMonitor {
         }
 
         let button = event.getIntegerValueField(.mouseEventButtonNumber)
-        guard button > 1 else {
+        guard button > 1, !monitor.isReplaying(button) else {
             return Unmanaged.passUnretained(event)
         }
-        let passesThrough = monitor.passesThroughPrimaryButton(button)
-        if monitor.isReplaying(button) {
-            return Unmanaged.passUnretained(event)
-        }
-        let application = NSWorkspace.shared.frontmostApplication
-        let bundleIdentifier = application?.bundleIdentifier
-        let processIdentifier = application?.processIdentifier ?? 0
+
+        let configuration = monitor.currentConfiguration()
+        let (bundleIdentifier, processIdentifier) = monitor.frontmost()
         let appKitLocation = NSEvent.mouseLocation
         let quartzPoint = event.location
 
@@ -894,11 +698,8 @@ final class MouseEventMonitor {
         guard !configuration.paused else {
             return Unmanaged.passUnretained(event)
         }
-        let role = monitor.role(
-            for: button,
-            configuration: configuration
-        )
-        guard let role else {
+
+        guard let role = monitor.role(for: button, configuration: configuration) else {
             if isDown {
                 monitor.callbackHandler(
                     MouseButtonEvent(
@@ -914,22 +715,10 @@ final class MouseEventMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        let excluded: Bool
-        switch role {
-        case .hold:
-            excluded = BundleExclusion.matches(
-                bundleIdentifier,
-                in: configuration.holdExcludedBundleIDs
-            )
-        case .toggle, .enter:
-            excluded = BundleExclusion.matches(
-                bundleIdentifier,
-                in: configuration.navigationExcludedBundleIDs
-            )
-        default:
-            excluded = false
-        }
-        guard !excluded else {
+        let excludedList = role == .hold
+            ? configuration.holdExcludedBundleIDs
+            : configuration.navigationExcludedBundleIDs
+        if BundleExclusion.matches(bundleIdentifier, in: excludedList) {
             if monitor.handleFinderNavigation(
                 role: role,
                 button: button,
@@ -943,15 +732,9 @@ final class MouseEventMonitor {
 
         if role == .hold {
             if isDragged {
-                _ = monitor.abortPressIfMoved(button, cursor: appKitLocation)
-                monitor.emitHoldDragIfLong(
-                    button: button,
-                    generation: monitor.currentGeneration(for: button)
-                )
-                if monitor.shouldSwallowHoldMouseTraffic(button) {
-                    return nil
-                }
-                return Unmanaged.passUnretained(event)
+                monitor.abortPressIfMoved(button, cursor: appKitLocation)
+                monitor.emitHoldDragIfLong(button: button, location: appKitLocation)
+                return monitor.isLongPress(button) ? nil : Unmanaged.passUnretained(event)
             }
             if isDown {
                 let clickCount = event.getIntegerValueField(.mouseEventClickState)
@@ -963,24 +746,12 @@ final class MouseEventMonitor {
                     origin: appKitLocation,
                     quartzPoint: quartzPoint,
                     bundleIdentifier: bundleIdentifier,
-                    processIdentifier: processIdentifier,
-                    wechatPreemptEnabled: configuration.wechatHoldPreemptEnabled
+                    processIdentifier: processIdentifier
                 )
-                return passesThrough
-                    ? Unmanaged.passUnretained(event)
-                    : nil
+                return nil
             }
-            if isUp {
-                let swallowUp = monitor.shouldSwallowHoldMouseUp(button)
-                monitor.releasePress(button, viaPhysicalPoll: false)
-                if swallowUp {
-                    return nil
-                }
-                return passesThrough
-                    ? Unmanaged.passUnretained(event)
-                    : nil
-            }
-            return Unmanaged.passUnretained(event)
+            monitor.releasePress(button, at: quartzPoint)
+            return nil
         }
 
         if isDown {
@@ -995,79 +766,6 @@ final class MouseEventMonitor {
                 )
             )
         }
-
-        return passesThrough
-            ? Unmanaged.passUnretained(event)
-            : nil
-    }
-
-    private func currentGeneration(for button: Int64) -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return pressStates[button]?.generation ?? 0
-    }
-
-    private func shouldSwallowHoldMouseTraffic(_ button: Int64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let state = pressStates[button], state.tracking else {
-            return false
-        }
-        return state.isLong || state.preempted
-    }
-
-    private func shouldSwallowHoldMouseUp(_ button: Int64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return pressStates[button]?.preempted == true
-    }
-
-    private func hasDeferredHoldTracking() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let state = pressStates[0] else { return false }
-        return state.tracking && state.deferredDown && !state.deliveredDown && !state.isLong
-    }
-
-    private func postMouseEvent(
-        button: Int64,
-        isDown: Bool,
-        at location: CGPoint,
-        drag: Bool = false
-    ) {
-        lock.lock()
-        replayingButton = button
-        lock.unlock()
-        defer {
-            lock.lock()
-            replayingButton = nil
-            lock.unlock()
-        }
-        let source = CGEventSource(stateID: .hidSystemState)
-        source?.userData = Self.syntheticEventTag
-        let mouseType: CGEventType
-        let mouseButton: CGMouseButton
-        switch button {
-        case 0:
-            mouseType = drag ? .leftMouseDragged : (isDown ? .leftMouseDown : .leftMouseUp)
-            mouseButton = .left
-        case 1:
-            mouseType = drag ? .rightMouseDragged : (isDown ? .rightMouseDown : .rightMouseUp)
-            mouseButton = .right
-        default:
-            mouseType = drag ? .otherMouseDragged : (isDown ? .otherMouseDown : .otherMouseUp)
-            mouseButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
-        }
-        let event = CGEvent(
-            mouseEventSource: source,
-            mouseType: mouseType,
-            mouseCursorPosition: location,
-            mouseButton: mouseButton
-        )
-        event?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
-        if button >= 2 {
-            event?.setIntegerValueField(.mouseEventButtonNumber, value: button)
-        }
-        event?.post(tap: .cghidEventTap)
+        return nil
     }
 }

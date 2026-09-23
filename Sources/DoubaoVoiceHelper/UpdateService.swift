@@ -89,7 +89,7 @@ final class UpdateService: ObservableObject {
         }
     }
 
-    func downloadAndInstall(downloadURL: URL, currentAppURL: URL) async {
+    func downloadAndInstall(downloadURL: URL, currentAppURL: URL, currentVersion: String) async {
         state = .downloading(progress: 0.1)
 
         do {
@@ -124,25 +124,33 @@ final class UpdateService: ObservableObject {
                 throw NSError(domain: "UpdateService", code: 2, userInfo: [NSLocalizedDescriptionKey: "更新包中未包含应用程序"])
             }
 
-            let scriptURL = tempDir.appendingPathComponent("restart_updater.sh")
-            let targetPath = currentAppURL.path
-            let pid = ProcessInfo.processInfo.processIdentifier
+            try UpdateVerifier.verify(stagedApp: stagedApp, currentVersion: currentVersion)
 
+            let scriptURL = tempDir.appendingPathComponent("restart_updater.sh")
+            // Paths are passed as arguments, never interpolated into the script.
+            // The new bundle is copied next to the old one first, so a failed
+            // copy never leaves the user without an app.
             let script = """
             #!/bin/sh
-            TARGET="\(targetPath)"
-            STAGED="\(stagedApp.path)"
-            WAIT_PID="\(pid)"
-            TEMP_DIR="\(tempDir.path)"
+            TARGET="$1"
+            STAGED="$2"
+            WAIT_PID="$3"
+            TEMP_DIR="$4"
+            NEXT="$TARGET.updating"
 
             while kill -0 "$WAIT_PID" 2>/dev/null; do
                 sleep 0.1
             done
 
-            rm -rf "$TARGET"
-            ditto "$STAGED" "$TARGET"
-            xattr -cr "$TARGET" 2>/dev/null || true
-            touch "$TARGET"
+            rm -rf "$NEXT"
+            if ditto "$STAGED" "$NEXT"; then
+                rm -rf "$TARGET"
+                mv "$NEXT" "$TARGET"
+                xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+                touch "$TARGET"
+            else
+                rm -rf "$NEXT"
+            fi
             open "$TARGET"
             rm -rf "$TEMP_DIR"
             """
@@ -152,7 +160,13 @@ final class UpdateService: ObservableObject {
 
             let launcher = Process()
             launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
-            launcher.arguments = [scriptURL.path]
+            launcher.arguments = [
+                scriptURL.path,
+                currentAppURL.path,
+                stagedApp.path,
+                String(ProcessInfo.processInfo.processIdentifier),
+                tempDir.path,
+            ]
             try launcher.run()
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {

@@ -43,11 +43,19 @@ else
     SIGNING_IDENTITY="-"
 fi
 
+# The bundle contains a single executable and no nested code, so --deep is
+# unnecessary. Hardened Runtime is required for notarization and needs no
+# extra entitlements for event taps or Accessibility.
 if [ "$SIGNING_IDENTITY" = "-" ]; then
-    codesign --force --deep --sign "-" "$APP_DIR"
+    codesign --force --sign "-" "$APP_DIR"
 else
-    codesign --force --deep $KEYCHAIN_ARG --sign "$SIGNING_IDENTITY" "$APP_DIR"
+    TIMESTAMP_ARG=""
+    case "$SIGNING_IDENTITY" in
+        "Developer ID Application:"*) TIMESTAMP_ARG="--timestamp" ;;
+    esac
+    codesign --force --options runtime $TIMESTAMP_ARG $KEYCHAIN_ARG --sign "$SIGNING_IDENTITY" "$APP_DIR"
 fi
+codesign --verify --strict "$APP_DIR"
 
 echo "Built $APP_DIR"
 echo "Signed with $SIGNING_IDENTITY"

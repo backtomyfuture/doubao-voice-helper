@@ -13,8 +13,11 @@ struct DoubaoVoiceHelperApp: App {
         let settingsWindowController = SettingsWindowController(model: model)
         _model = StateObject(wrappedValue: model)
         self.settingsWindowController = settingsWindowController
-        DispatchQueue.main.async {
-            settingsWindowController.show()
+        // Login-item launches stay silent unless the user has to act.
+        if model.needsAttentionOnLaunch {
+            DispatchQueue.main.async {
+                settingsWindowController.show()
+            }
         }
     }
 

@@ -81,13 +81,6 @@ struct SettingsView: View {
                 Text("本 App 不录音，只把鼠标动作映射到豆包快捷键。")
                     .foregroundStyle(.secondary)
                     .font(.footnote)
-                Toggle(
-                    "微信输入区抢跑（避免和微信自己的长按语音冲突）",
-                    isOn: Binding(
-                        get: { model.settings.wechatHoldPreemptEnabled },
-                        set: { model.setWechatHoldPreemptEnabled($0) }
-                    )
-                )
             }
 
             Section("输入") {
@@ -98,7 +91,7 @@ struct SettingsView: View {
                 MouseMappingRow(role: .enter)
                     .environmentObject(model)
                 Text(
-                    "默认：前进键为切换式语音；后退键发送 Return。左键长按已默认禁用以彻底避免拖拽窗口和选择文本误触。点击“录制按键”可绑定侧键更换。"
+                    "默认：前进键为切换式语音，后退键发送 Return，按住式未绑定。左键和右键保留给系统，只能绑定侧键或中键。点击“录制按键”更换。"
                 )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -149,11 +142,12 @@ struct SettingsView: View {
             }
 
             Section("语音宏（特殊文字替换）") {
-                Text("听写结束时，将识别到的特定文字自动替换为目标符号或命令。长词优先匹配。")
+                Text("听写结束时，将识别到的特定文字替换为目标符号或命令。长词优先；匹配时忽略标点和空格。用 | 分隔多个说法（如 斜杠|写杠）以兼容同音误识别。整句都是命令时，结尾标点会一并去掉。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                 ForEach(model.settings.macroRules) { rule in
+                    MacroRuleIssueLabel(kind: model.macroValidationIssues[rule.id])
                     HStack(spacing: 8) {
                         Toggle(
                             "",
@@ -169,7 +163,7 @@ struct SettingsView: View {
                         .labelsHidden()
 
                         TextField(
-                            "识别词 (如 approve)",
+                            "识别词 (如 斜杠批准)",
                             text: Binding(
                                 get: {
                                     model.settings.macroRules.first(where: { $0.id == rule.id })?.source ?? ""
@@ -212,16 +206,37 @@ struct SettingsView: View {
                 } label: {
                     Label("添加替换规则", systemImage: "plus.circle")
                 }
+
+                MacroPreviewRow()
+                    .environmentObject(model)
+            }
+
+            Section("击键写回（语音宏）") {
+                Text("部分应用（多为 Electron / Chromium 编辑器）不接受辅助功能写入。只有名单内的应用，才会在确认光标恰好位于本次听写文本之后时，用退格加模拟输入完成替换；名单外的应用保留原文。终端请加入下方的终端名单，而不是这里。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                AppBundleList(list: .keystrokeFallback, removeHelp: "从击键写回名单中移除")
+                    .environmentObject(model)
+            }
+
+            Section("终端语音宏") {
+                Text("名单内的终端会比对整屏文本：只有整屏除了光标处这一行的插入之外完全没有变化（没有命令输出、没有换行、没有占位提示被替换），才会用退格加模拟输入替换本次听写。其余情况保留原文。终端未开放辅助功能文本时自动退回“只触发”。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                AppBundleList(list: .terminalMacro, removeHelp: "从终端名单中移除")
+                    .environmentObject(model)
             }
 
             Section("浏览器与导航排除") {
-                Text("在此名单中的应用（如浏览器）内，鼠标侧键（前进/后退）将保留原生页面前进/后退功能，不触发语音或回车。左键长按语音在所有应用中均正常生效。")
+                Text("在此名单中的应用（如浏览器）内，鼠标侧键（前进/后退）将保留原生页面前进/后退功能，不触发切换式语音或回车。按住式语音不受此名单影响。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                 ForEach(model.settings.excludedBundleIDs, id: \.self) { bundleID in
                     ExcludedAppRow(bundleID: bundleID) {
-                        model.removeExcludedBundleID(bundleID)
+                        model.removeBundleID(bundleID, from: .navigationExcluded)
                     }
                 }
 
@@ -231,7 +246,7 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
 
                         Button("添加") {
-                            model.addExcludedBundleID(manualExcludedBundleID)
+                            model.addBundleID(manualExcludedBundleID, to: .navigationExcluded)
                             manualExcludedBundleID = ""
                             showManualExcludedInput = false
                         }
@@ -247,7 +262,7 @@ struct SettingsView: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        model.pickAndAddExcludedApplication()
+                        model.pickApplications(for: .navigationExcluded)
                     } label: {
                         Label("选择应用程序…", systemImage: "plus.circle")
                     }
@@ -419,7 +434,7 @@ struct SettingsView: View {
 
             Section("说明") {
                 Text(
-                    "按住式：约 280ms 长按，移动超过 6pt 当拖拽。拖远可取消。Esc 在听写中停止豆包。微信里会抢在官方长按语音之前接管左键。"
+                    "按住式：约 280ms 长按开始，达到前移动超过 10pt 视为拖拽。长按中拖远可停止且不做语音宏。听写中按 Esc 停止豆包。"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -649,11 +664,14 @@ private final class ShortcutRecorderView: NSView {
                 name: NSWindow.didResignKeyNotification,
                 object: window
             )
+        } else {
+            // Leaving the window is the last main-actor callback before the
+            // view is released, so the key monitor is removed here.
+            stopLocalMonitor()
         }
     }
 
     deinit {
-        stopLocalMonitor()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -851,6 +869,8 @@ struct ExcludedAppMetadata {
         "org.mozilla.firefox": "Firefox 火狐浏览器",
         "company.thebrowser.Browser": "Arc 浏览器",
         "com.stablyai.orca": "Orca",
+        "com.todesktop.230313m46w4u92": "Cursor",
+        "com.microsoft.VSCode": "Visual Studio Code",
         "com.citrolabs.ego": "Ego 浏览器",
         "com.citrolabs.ego.lite": "Ego Lite",
         "com.brave.Browser": "Brave 浏览器",
@@ -860,6 +880,8 @@ struct ExcludedAppMetadata {
         "com.mitchellh.ghostty": "Ghostty",
         "com.github.wez.wezterm": "WezTerm",
         "com.googlecode.iterm2": "iTerm2",
+        "net.kovidgoyal.kitty": "kitty",
+        "dev.warp.Warp-Stable": "Warp",
         AppSettings.bundleIdentifier: "豆包语音助手",
     ]
 
@@ -877,8 +899,70 @@ struct ExcludedAppMetadata {
     }
 }
 
+private struct AppBundleList: View {
+    @EnvironmentObject private var model: AppModel
+    let list: AppList
+    let removeHelp: String
+
+    var body: some View {
+        ForEach(model.bundleIDs(in: list), id: \.self) { bundleID in
+            ExcludedAppRow(bundleID: bundleID, removeHelp: removeHelp) {
+                model.removeBundleID(bundleID, from: list)
+            }
+        }
+
+        Button {
+            model.pickApplications(for: list)
+        } label: {
+            Label("选择应用程序…", systemImage: "plus.circle")
+        }
+        .padding(.top, 4)
+    }
+}
+
+private struct MacroRuleIssueLabel: View {
+    let kind: MacroValidationIssue.Kind?
+
+    var body: some View {
+        if let kind {
+            Label(
+                kind == .emptySource ? "识别词为空，此规则不会生效" : "识别词与上方规则重复，只有先出现的规则生效",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
+    }
+}
+
+private struct MacroPreviewRow: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var sample = "斜杠批准。"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("输入一段听写文本试试效果", text: $sample)
+                .textFieldStyle(.roundedBorder)
+            let result = model.preview(sample)
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .foregroundStyle(.secondary)
+                Text(result.output.isEmpty ? " " : result.output)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer()
+                Text(result.changed ? "命中 \(result.matchCount) 条" : "无命中")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
 private struct ExcludedAppRow: View {
     let bundleID: String
+    var removeHelp = "从排除名单中移除"
     let onDelete: () -> Void
 
     private var metadata: ExcludedAppMetadata {
@@ -908,7 +992,7 @@ private struct ExcludedAppRow: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
-            .help("从排除名单中移除")
+            .help(removeHelp)
         }
         .padding(.vertical, 3)
     }

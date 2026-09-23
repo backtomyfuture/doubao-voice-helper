@@ -207,7 +207,7 @@ public struct AppVersion: Comparable, Equatable, CustomStringConvertible, Sendab
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 10
+    public static let currentSchemaVersion = 12
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
     public static let gitHubRepository = "backtomyfuture/doubao-voice-helper"
     public static let gitHubReleasesAPIURL = URL(string: "https://api.github.com/repos/backtomyfuture/doubao-voice-helper/releases/latest")!
@@ -228,9 +228,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var excludedBundleIDs: [String]
     public var holdExcludedBundleIDs: [String]
     public var macroRules: [MacroRule]
+    /// Apps whose text controls ignore AX writes; only these may receive the
+    /// backspace + typed-text fallback when replacing a macro result.
+    public var keystrokeFallbackBundleIDs: [String]
+    /// Terminals whose screen buffer is diffed with `TerminalInsertionDiff`
+    /// so voice macros can be replaced at the prompt with keystrokes.
+    public var terminalMacroBundleIDs: [String]
     public var launchAtLogin: Bool
     public var overlayEnabled: Bool
-    public var wechatHoldPreemptEnabled: Bool
     public var onboardingCompleted: Bool
 
     public var navigationExcludedBundleIDs: [String] {
@@ -249,9 +254,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         excludedBundleIDs: [String] = AppSettings.defaultNavigationExcludedBundleIDs,
         holdExcludedBundleIDs: [String] = AppSettings.defaultHoldExcludedBundleIDs,
         macroRules: [MacroRule] = AppSettings.defaultMacroRules,
+        keystrokeFallbackBundleIDs: [String] = AppSettings.defaultKeystrokeFallbackBundleIDs,
+        terminalMacroBundleIDs: [String] = AppSettings.defaultTerminalMacroBundleIDs,
         launchAtLogin: Bool = true,
         overlayEnabled: Bool = true,
-        wechatHoldPreemptEnabled: Bool = true,
         onboardingCompleted: Bool = false
     ) {
         self.schemaVersion = schemaVersion
@@ -264,9 +270,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.excludedBundleIDs = excludedBundleIDs
         self.holdExcludedBundleIDs = holdExcludedBundleIDs
         self.macroRules = macroRules
+        self.keystrokeFallbackBundleIDs = keystrokeFallbackBundleIDs
+        self.terminalMacroBundleIDs = terminalMacroBundleIDs
         self.launchAtLogin = launchAtLogin
         self.overlayEnabled = overlayEnabled
-        self.wechatHoldPreemptEnabled = wechatHoldPreemptEnabled
         self.onboardingCompleted = onboardingCompleted
     }
 
@@ -386,12 +393,30 @@ public struct AppSettings: Codable, Equatable, Sendable {
                 }
             }
         }
+        if decodedSchemaVersion < 11 {
+            // The bare English "approve" rules rewrote ordinary sentences
+            // ("I approve this"). Keep them visible but disabled.
+            for index in decodedMacroRules.indices
+                where AppSettings.retiredMacroRuleSources.contains(decodedMacroRules[index].source)
+                && decodedMacroRules[index].replacement == "/approve"
+            {
+                decodedMacroRules[index].isEnabled = false
+            }
+        }
         macroRules = decodedMacroRules
         if decodedSchemaVersion < 10 {
             if holdMouseBinding.button <= 1 {
                 holdMouseBinding = AppSettings.defaultHoldMouseBinding
             }
         }
+        keystrokeFallbackBundleIDs = try container.decodeIfPresent(
+            [String].self,
+            forKey: .keystrokeFallbackBundleIDs
+        ) ?? AppSettings.defaultKeystrokeFallbackBundleIDs
+        terminalMacroBundleIDs = try container.decodeIfPresent(
+            [String].self,
+            forKey: .terminalMacroBundleIDs
+        ) ?? AppSettings.defaultTerminalMacroBundleIDs
         launchAtLogin = try container.decodeIfPresent(
             Bool.self,
             forKey: .launchAtLogin
@@ -399,10 +424,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
         overlayEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .overlayEnabled
-        ) ?? true
-        wechatHoldPreemptEnabled = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .wechatHoldPreemptEnabled
         ) ?? true
         onboardingCompleted = try container.decodeIfPresent(
             Bool.self,
@@ -438,12 +459,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
             forKey: .holdExcludedBundleIDs
         )
         try container.encode(macroRules, forKey: .macroRules)
+        try container.encode(
+            keystrokeFallbackBundleIDs,
+            forKey: .keystrokeFallbackBundleIDs
+        )
+        try container.encode(
+            terminalMacroBundleIDs,
+            forKey: .terminalMacroBundleIDs
+        )
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(overlayEnabled, forKey: .overlayEnabled)
-        try container.encode(
-            wechatHoldPreemptEnabled,
-            forKey: .wechatHoldPreemptEnabled
-        )
         try container.encode(onboardingCompleted, forKey: .onboardingCompleted)
     }
 
@@ -467,6 +492,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public func isHoldExcluded(bundleIdentifier: String?) -> Bool {
         BundleExclusion.matches(bundleIdentifier, in: holdExcludedBundleIDs)
+    }
+
+    public func allowsKeystrokeFallback(bundleIdentifier: String?) -> Bool {
+        BundleExclusion.matches(bundleIdentifier, in: keystrokeFallbackBundleIDs)
+    }
+
+    public func textTargetMode(bundleIdentifier: String?) -> TextTargetMode {
+        BundleExclusion.matches(bundleIdentifier, in: terminalMacroBundleIDs)
+            ? .terminal
+            : .standard
     }
 
     public static let defaultNavigationExcludedBundleIDs = [
@@ -506,11 +541,31 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let defaultEnterShortcut = KeyboardShortcut(keyCode: 36)
 
     public static let defaultMacroRules = [
-        MacroRule(source: "approve", replacement: "/approve"),
-        MacroRule(source: "Approve", replacement: "/approve"),
         MacroRule(source: "斜杠批准", replacement: "/approve"),
         MacroRule(source: "斜杠任务", replacement: "/missions"),
         MacroRule(source: "斜杠", replacement: "/"),
+    ]
+
+    static let retiredMacroRuleSources: Set<String> = ["approve", "Approve"]
+
+    /// Electron/Chromium hosts where AX value writes are accepted but not
+    /// reflected; terminals are deliberately absent because their AX value is
+    /// the whole screen buffer.
+    public static let defaultKeystrokeFallbackBundleIDs = [
+        "com.stablyai.orca",
+        "com.todesktop.230313m46w4u92",
+        "com.microsoft.VSCode",
+    ]
+
+    /// Terminals without a readable AX buffer simply fail anchor capture and
+    /// stay trigger-only, so listing them is harmless.
+    public static let defaultTerminalMacroBundleIDs = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "com.mitchellh.ghostty",
+        "com.github.wez.wezterm",
+        "net.kovidgoyal.kitty",
+        "dev.warp.Warp-Stable",
     ]
 
     private enum CodingKeys: String, CodingKey {
@@ -527,9 +582,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case navigationExcludedBundleIDs
         case holdExcludedBundleIDs
         case macroRules
+        case keystrokeFallbackBundleIDs
+        case terminalMacroBundleIDs
         case launchAtLogin
         case overlayEnabled
-        case wechatHoldPreemptEnabled
         case onboardingCompleted
     }
 }

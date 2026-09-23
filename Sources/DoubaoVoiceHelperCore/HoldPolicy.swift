@@ -8,8 +8,6 @@ public enum HoldPolicy {
     public static let cancelArmDistance: CGFloat = 70
     public static let cancelDisarmDistance: CGFloat = 45
     public static let cancelDeadZone: CGFloat = 15
-    public static let wechatPreemptDelay: TimeInterval = 0.25
-    public static let physicalPollInterval: TimeInterval = 1.0 / 60.0
     public static let probeTimeout: Float = 0.35
     public static let selectionCaptureTimeout: Float = 0.03
 }
