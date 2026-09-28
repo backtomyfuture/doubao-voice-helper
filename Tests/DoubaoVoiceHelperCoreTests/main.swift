@@ -1182,6 +1182,27 @@ private func testTerminalAgyPlaceholderIsConsumed() throws {
     try expectEqual(insertion.text, "usage", "agy placeholder replacement")
 }
 
+private func testTerminalAgyFooterStatusChangeIsHandled() throws {
+    let original = """
+    ────────────────────────────────────────
+    > Accept-edits mode: file edits auto-approved (shift+tab to cycle)
+    ────────────────────────────────────────
+    ? for shortcuts                     accept-edits · Gemini 3.8 Flash · high
+    """
+    let current = """
+    ────────────────────────────────────────
+    > usage
+    ────────────────────────────────────────
+                                        accept-edits · Gemini 3.8 Flash · high
+    """
+    let insertion = try TerminalInsertionDiff.compute(
+        original: original,
+        current: current,
+        caretUTF16: nil
+    )
+    try expectEqual(insertion.text, "usage", "agy footer shortcuts cleared during input")
+}
+
 private func testTerminalRejectsOtherChanges() throws {
     try expectEqual(
         terminalFailure(original: "$ ls\n", current: "$ ls\nfile.txt\n$ 斜杠"),
@@ -1697,6 +1718,7 @@ let tests: [(String, () throws -> Void)] = [
     ("terminal TUI padding is consumed", testTerminalTUIPaddingIsConsumed),
     ("terminal TUI placeholder is consumed", testTerminalTUIPlaceholderIsConsumed),
     ("terminal agy placeholder is consumed", testTerminalAgyPlaceholderIsConsumed),
+    ("terminal agy footer status change is handled", testTerminalAgyFooterStatusChangeIsHandled),
     ("terminal rejects other changes", testTerminalRejectsOtherChanges),
     ("terminal caret decides trailing space", testTerminalCaretDecidesTrailingSpace),
     ("terminal UTF-16 location", testTerminalUTF16Location),
