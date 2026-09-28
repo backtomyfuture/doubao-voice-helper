@@ -229,12 +229,14 @@ stateDiagram-v2
 
 默认终端名单：Terminal、iTerm2、Ghostty、WezTerm、kitty、Warp。没有开放 AX 文本的终端会在锚点捕获阶段失败，自动退回只触发。
 
-### 10.2 锚点与稳定检测
+### 10.2 锚点、边读边判断与提前替换
 
-- 存在启用的宏规则时，在输入队列中于**开始快捷键之前**同步捕获锚点，AX 消息超时 0.1 s，耗时写入诊断日志。焦点元素解析顺序：会话目标 PID → 其焦点窗口 → 前台应用 → 系统级焦点。快照包含值、选区（同时记录应用是否真的报告了选区）、PID、bundle ID、role、窗口 hash。捕获失败时浮层提示“宏替换不可用”，会话照常进行。
-- 稳定检测对锚点元素注册 `AXObserver`（`kAXValueChangedNotification`），值变化立即唤醒等待循环；不发通知的应用退化为轮询（未变化 30 ms，变化后 50 ms）。每次唤醒都校验焦点元素和身份未变。
-- 值与锚点不同，且持续 **300 ms** 未再变化，视为 Settled Text。总超时 `min(1.5 s + 0.1 × 录音秒数, 4 s)`。
-- 返回首次变化时间、稳定时间与通知次数，用于实测调参（§17）。
+- 存在启用的宏规则时，在输入队列中于**开始快捷键之前**同步捕获锚点，AX 消息超时 0.1 s，耗时写入诊断日志。焦点元素解析顺序：会话目标 PID → 其焦点窗口 → 前台应用 → 系统级焦点。快照包含值、选区、PID、bundle ID、role、窗口 hash。捕获失败时浮层提示“宏替换不可用”（微信等已知不提供输入框内容的应用除外），会话照常进行。
+- 听写结束停止后，协调器进入轮询 `watchInsertedText`，每次检测到文本变动均调用 `MacroEngine.decide` 进行前缀判定：
+  - **提前替换（Early Replace）**：一旦判定新增文本完整等于某个触发词（忽略标点、空白、大小写及全角半角），立即执行写回，无需等待文字进入 300 ms 静默稳定期。替换后不再持续观察。
+  - **提前放弃（Early Reject）**：若新增文本不可能成为任何启用规则的前缀，立即结束会话处理状态。为了支持设置页中的“最近识别”，协调器在后台队列启动最多 1.0 秒的 `observeFinalText` 补读最终文本（不超过 20 字），不阻塞前台。
+  - **稳定最终判定**：若一直未提前命中且保持前缀可能，等待文字稳定（300 ms 未变）后由 `finalDecision` 作出最终匹配判定；未命中则保留原文。
+- 总超时沿用 `SettlePolicy.timeout(forListeningDuration: listened)`。
 
 ### 10.3 新增文本推断
 
@@ -250,44 +252,56 @@ stateDiagram-v2
 
 **终端**（`TerminalInsertionDiff.compute`，结果级别 `terminalLine`）：
 
-1. 求原文与现文的最长公共前缀和（不重叠的）最长公共后缀，中间分别为“被移除部分”和“新增部分”。
-2. 被移除部分只能是空白填充（空格、制表符、不换行空格）；否则说明屏幕别处有变化（命令输出、时钟、占位提示），拒绝。
-3. 新增部分不能含换行（长句自动换行、多行输出都拒绝）。
-4. 若终端报告了光标且光标落在新增部分内，光标之后只能是空白，插入文本截止到光标；否则，若消耗了填充空白（TUI 输入框），去掉新增部分末尾的空白；纯插入（shell 提示符）则保留全部新增内容。
+1. 求原文与现文的最长公共前缀和最长公共后缀，中间分别为“被移除部分”和“新增部分”。
+2. 被移除部分只能是空白填充；否则说明屏幕别处有变化，拒绝。
+3. 新增部分不能含换行。
+4. 若终端报告了光标且光标落在新增部分内，光标之后只能是空白，插入文本截止到光标；否则若消耗了填充空白，去掉末尾空白；纯插入保留全部新增内容。
 
-### 10.4 可编辑控件的写回
+### 10.4 可编辑控件的写回与校验放宽
 
-写回前再次校验焦点、身份和全文未变，然后：
+写回前校验焦点与身份：
+- 若焦点改变，抛出 `focusChanged` 并取消；
+- 若焦点未变但内容发生改动，抛出 `textChangedBeforeWrite`，由协调器回到 `watchInsertedText` 继续等待判定，共用同一截止时间。
 
+写回步骤：
 1. 选中新增范围并写 `kAXSelectedText`；失败则写整段 `kAXValue` 并把光标放到替换文本之后。
-2. 300 ms 内读回：等于预期即成功；仍等于写回前的文本表示写入被忽略，进入第 3 步；变成其他内容则立即放弃。
-3. **击键写回**，同时满足才执行：应用在 `keystrokeFallbackBundleIDs` 名单中（默认 Orca、Cursor、VS Code）；差分级别为 `exact`；新增文本不含多标量字符；当前选区恰好等于新增范围（直接输入），或光标恰好位于新增文本末尾（先按字符数退格）。完成后 400 ms 内读回校验。
+2. **读回校验放宽（`WriteVerification.isApplied`）**：豆包听写停止后常会在尾部追补句号等标点。读回时只要满足 `actual == prefix + replacement + [可选忽略标点/空白] + suffix`，即视为写回成功。
+3. **击键写回**：应用在 `keystrokeFallbackBundleIDs` 名单中；差分级别为 `exact`；新增文本不含多标量字符；当前选区恰好等于新增范围或光标恰好位于末尾。完成后通过 `WriteVerification.isApplied` 读回校验。
 
 ### 10.5 终端写回
 
-终端缓冲只读，直接走击键：
-
-1. 校验焦点、身份和整屏文本自稳定以来未变；新增文本不含多标量字符。
+终端缓冲只读，走击键写回：
+1. 校验焦点与身份。
 2. 在光标处按字符数退格，再输入替换结果。
-3. 校验：600 ms 内，整屏文本必须以“插入点之前的原内容 + 替换结果”开头。插入点之后的内容不参与比较，因为 TUI 可能在输入 `/` 后弹出命令菜单。
+3. 校验：对 `unverifiedTypingTerminalBundleIDs` 名单内的终端（键入完成即成功），跳过读回校验；其余终端 600 ms 内整屏文本必须以“插入点前原内容 + 替换结果”开头。
 
-两种击键写回都会临时切换到 ASCII 键盘布局（避免中文输入法把模拟按键转成拼音），替换文本按每个事件 ≤ 20 个 UTF-16 单元分段输入，完成后恢复原输入法。校验失败时浮层提示用户检查文本。
+### 10.6 回车等待与降级路径
 
-### 10.6 降级路径
-
-以下情况只触发豆包、保留原文：没有启用的宏规则、锚点捕获失败、焦点变化、稳定超时、差分被拒绝、宏无命中、写入被忽略且应用不在名单中、写回被其他修改干扰、会话被取消。写入被忽略或校验失败时，浮层给出非阻塞提示。
+- **回车等待（ADR 0003）**：听写中或语音宏处理中按回车，挂起回车并等待语音宏执行结果，最多等待 2.0 秒：
+  - 宏替换成功、未命中或提前放弃：在延时 60 ms 后发送回车；
+  - 宏替换失败：**不发送回车**，避免把未展开的简写直接作为消息发送；提示信息完全遵循浮窗开关；
+  - 超时 2.0 秒：若尚未开始写回，取消宏并发送回车；若已开始写回，继续等待写回结果。
+- **降级路径**：无启用规则、无锚点、稳定超时、差分被拒、写回被忽略等情况均保留原文。
 
 ## 11. 语音宏引擎
 
-`MacroEngine.apply` 是纯函数：
+语音宏仅进行整句替换（ADR 0002），不支持句中替换：
 
-1. 过滤禁用规则；每条规则的来源文本按 `|` 拆成多个别名。
-2. 输入与别名都去掉可忽略字符（中英文逗号、顿号、句号、叹号、问号、分号、冒号，以及空白）后比较，大小写敏感。
-3. 按别名字符数降序，同长度保持规则顺序；从左到右扫描，同一位置取第一条匹配，替换结果不再参与匹配。
-4. 匹配区间内的可忽略字符随匹配一起被替换；区间外原样保留。
-5. 若所有非可忽略字符都被匹配覆盖（整句都是命令），输出只由替换结果拼接而成，结尾标点一并去掉。
+1. **归一化（`MacroNormalizer`）**：
+   - Unicode NFKC 兼容分解；
+   - 转小写；
+   - 过滤所有标点符号（P*）、分隔符（Z*）、格式字符（Cf）及空白控制符，保留运算与修饰符号（S*）。
+2. **整句匹配判定**：
+   - `decide(insertedText)`：边读边判。归一化后为空或匹配某个触发词的严格前缀时返回 `.pending`；等于触发词时返回 `.match`；不可能是任何规则的前缀时返回 `.reject`（提前放弃）。
+   - `finalDecision(insertedText)`：文本稳定后的最终判断，仅返回 `.match` 或 `.reject`。
+3. **别名与规则迁移**：
+   - 每条规则的来源文本支持用 `|` 分隔多个别名；
+   - Schema 13 升级时，自动将触发词归一化集合相同且目标文本相同的规则合并为一条。
+4. **校验**：
+   - 检查空来源、重复触发词；
+   - 新增 `prefixConflict`（触发词互为前缀，如 `model` 与 `models`），在设置界面给出提示说明。
 
-`validate` 报告空来源和（归一化后）重复的别名，设置界面逐条提示；设置页提供实时预览。默认规则：`斜杠批准` → `/approve`，`斜杠任务` → `/missions`，`斜杠` → `/`。
+默认规则：`斜杠批准` → `/approve`，`斜杠任务` → `/missions`，`斜杠` → `/`。设置页提供实时效果预览与“最近识别”别名添加入口。
 
 ## 12. 设置与持久化
 
@@ -325,23 +339,32 @@ stateDiagram-v2
 
 ## 17. 诊断与日志
 
-`Diagnostics` 通过 `os.Logger` 记录稳定事件名，字段只含 bundle ID、按键号、长度、计数、耗时和错误枚举，**不含听写原文或替换结果**。
+### 17.1 Unified Log
 
-主要事件：`mouse_event_tap_started`、`mouse_button_received`、`session_ignored`、`session_preempted_by_hold`、`anchor_captured`（含耗时）、`anchor_failed`、`mouse_session_started`、`shortcut_emitted`、`text_settled`（模式、差分级别、长度、录音时长、首次变化、稳定耗时、通知次数）、`macro_result`（命中数、输入输出长度）、`replace_success`（写回方式）、`macro_not_applied`（原因）、`macro_skipped`、`focus_changed`、`session_timeout`、`enter_emitted`。
+`Diagnostics` 通过 `os.Logger` 记录稳定事件名，字段只含 session 短编号（8 位十六进制）、bundle ID、按键号、长度、计数、耗时和错误枚举名（`TextTargetError.name`），**绝不记录听写原文或替换结果**。
 
-查看：`log stream --predicate 'subsystem == "com.jarod.doubao-voice-helper"'`。
+主要事件：`mouse_event_tap_started`、`mouse_button_received`、`session_ignored`、`session_preempted_by_hold`、`anchor_captured`（含耗时）、`anchor_failed`、`mouse_session_started`、`shortcut_emitted`、`text_settled`、`macro_early_replace`、`macro_early_reject`、`macro_retry_text_changed`、`replace_success`（写回方式）、`macro_not_applied`（枚举名）、`macro_skipped`、`macro_cancelled`（取消阶段）、`focus_changed`、`session_timeout`、`enter_deferred`、`enter_emitted`、`enter_withheld`、`enter_after_timeout`。
+
+查看实时日志：`log stream --predicate 'subsystem == "com.jarod.doubao-voice-helper"'`。
+
+### 17.2 本地会话记录
+
+- 路径：`~/Library/Logs/DoubaoVoiceHelper/sessions.jsonl`，每行对应一次会话。
+- 启动时自动删除超过 30 天的记录。
+- 包含字段：`id`, `startedAt`, `app`, `mode`, `role`, `listenedMs`, `anchor`, `outcome`, `decision`, `failure`, `method`, `firstChangeMs`, `decisionMs`, `doneMs`, `enter`, `enterWaitMs`。
+- **无文本隐私**：仅记录耗时、状态、应用 ID 与按键行为，严禁记录任何听写与替换文本。
 
 ## 18. 测试
 
-- `swift run DoubaoVoiceHelperCoreTests`，当前 51 个用例。
-- **已覆盖**：宏引擎（最长匹配、非递归、Unicode、禁用、标点忽略、别名、整句命令、默认规则不改写英文、校验）、可编辑控件差分（中间插入、选区替换、UTF-16 偏移、末尾追加、公共前缀、无新增）、终端差分（shell 提示符、TUI 填充、拒绝命令输出 / 换行 / 占位提示 / 别处变化、光标决定末尾空白、UTF-16 位置）、击键分段、会话触发策略、稳定等待策略、快捷键事件序列、schema 迁移（含 schema 11、12）、设置读写与损坏备份、微信区域、拖动取消、选区恢复策略、按住否决、排除列表、Logi JSON 修补。
+- `swift run DoubaoVoiceHelperCoreTests`，当前 69 个用例。
+- **已覆盖**：宏引擎（整句判定、提前匹配、提前放弃、NFKC/标点忽略归一化、别名、符号保留、规则校验与互为前缀提醒）、写回校验放宽（容忍追补标点与空白、拒绝其他变动）、最近识别环形缓冲（容量 5、上限 20 字符）、本地会话记录 JSONL 追加与 30 天修剪、会话记录字段白名单反向断言、可编辑控件差分、终端差分与免校验列表、击键分段、会话触发策略、稳定等待策略、快捷键事件序列、schema 迁移（含 schema 11、12、13 大小写重复规则自动合并）、设置读写与损坏备份、微信区域、拖动取消、选区恢复策略、按住否决、排除列表、Logi JSON 修补。
 - **未覆盖（需真机）**：AX 读写与 `AXObserver`、各终端的 AX 缓冲格式、输入法切换、事件监听、签名校验、`DictationCoordinator` 与 `AppModel` 的集成行为。
 
 ## 19. 待定事项
 
 | # | 事项 | 说明 |
 |---|---|---|
-| 1 | 稳定参数实测 | 300 ms 静默期与超时公式需要用 `text_settled` 日志在豆包客户端和输入法上实测后调整 |
+| 1 | ~~稳定参数实测~~ | 已由整句提前替换（Early Replace）与放宽写回校验解决，命中时无需等待稳定期 |
 | 2 | 击键写回真机验证 | 编辑器名单与终端名单内各应用的 AX 表现、输入法切换需逐个验证；终端需确认 AX 值是否包含滚动缓冲、宽字符与换行的表示方式 |
 | 3 | 公开分发 | 需要 Apple Developer 账号；CI 已支持 Developer ID 签名与公证 |
 | 4 | 兼容性展示 | 是否在设置页按应用展示“支持 / 仅触发 / 击键写回 / 终端” |

@@ -100,6 +100,7 @@ final class AppModel: ObservableObject {
     @Published var logiOptionsInstalled: Bool = LogiOptionsPatcher.shared.isInstalled
     @Published var logiOptionsNeedsFix: Bool = false
     @Published var logiOptionsPatching: Bool = false
+    @Published var recentDictations = RecentDictations()
 
     let repository: SettingsRepository
     let permissionService: PermissionService
@@ -173,6 +174,8 @@ final class AppModel: ObservableObject {
         if settings.launchAtLogin, settings.onboardingCompleted {
             try? loginItemService.setEnabled(true)
         }
+
+        SessionRecordStore.defaultStore().pruneOlderThan(days: 30)
     }
 
     var appVersionString: String {
@@ -484,8 +487,35 @@ final class AppModel: ObservableObject {
         schedulePersist()
     }
 
-    func preview(_ text: String) -> MacroResult {
-        MacroEngine().apply(text, rules: settings.macroRules)
+    func preview(_ text: String) -> MacroEngine.Decision {
+        MacroEngine(rules: settings.macroRules).finalDecision(text)
+    }
+
+    private func cleanTrigger(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        result = result.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines))
+        return result
+    }
+
+    func addAlias(_ text: String, to ruleID: UUID) {
+        let cleaned = cleanTrigger(text)
+        guard !cleaned.isEmpty else { return }
+        updateMacroRule(id: ruleID) { rule in
+            if rule.source.isEmpty {
+                rule.source = cleaned
+            } else {
+                rule.source = "\(rule.source)|\(cleaned)"
+            }
+        }
+    }
+
+    func createRule(fromTrigger text: String) {
+        let cleaned = cleanTrigger(text)
+        guard !cleaned.isEmpty else { return }
+        settings.macroRules.append(
+            MacroRule(source: cleaned, replacement: "", isEnabled: true)
+        )
+        persist()
     }
 
     // MARK: - App lists
@@ -871,5 +901,9 @@ extension AppModel: DictationCoordinatorDelegate {
     func dictationDidFail(_ message: String) {
         status = .error
         showNotice(message)
+    }
+
+    func dictationDidCapture(text: String, bundleID: String, matched: Bool) {
+        recentDictations.append(text: text, bundleID: bundleID, matched: matched)
     }
 }

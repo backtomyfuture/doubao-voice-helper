@@ -1,6 +1,6 @@
 import Foundation
 
-public enum SessionRole: Equatable, Sendable {
+public enum SessionRole: String, Equatable, Sendable {
     case toggle
     case hold
 }

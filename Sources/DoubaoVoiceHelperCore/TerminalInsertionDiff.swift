@@ -36,7 +36,7 @@ public enum TerminalInsertionDiff {
 
         let removed = original[start..<end]
         let added = current[currentStart..<currentEnd]
-        guard removed.allSatisfy(isPadding) else {
+        guard !removed.contains(where: \.isNewline) else {
             throw TextInsertionDiff.Failure.notUnique
         }
         guard !added.isEmpty else {
@@ -44,6 +44,17 @@ public enum TerminalInsertionDiff {
         }
         guard !added.contains(where: \.isNewline) else {
             throw TextInsertionDiff.Failure.notUnique
+        }
+
+        // If characters were removed, it must either be blank padding being consumed
+        // or a single-line placeholder being replaced. A change elsewhere on screen
+        // (such as a prompt timestamp or output) that consumes prompt symbols like
+        // "$ ", "% ", or "# " is rejected.
+        if !removed.allSatisfy(isPadding) {
+            let promptIndicators = ["$ ", "% ", "# "]
+            if promptIndicators.contains(where: { removed.contains($0) }) {
+                throw TextInsertionDiff.Failure.notUnique
+            }
         }
 
         let startOffset = current.utf16.distance(from: current.startIndex, to: currentStart)

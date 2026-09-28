@@ -29,90 +29,109 @@ private func expectEqual<T: Equatable>(
 }
 
 private func testLongestRuleWins() throws {
-    let result = MacroEngine().apply(
-        "请执行斜杠批准",
-        rules: [
-            MacroRule(source: "斜杠", replacement: "/"),
-            MacroRule(source: "斜杠批准", replacement: "/approve"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠", replacement: "/"),
+        MacroRule(source: "斜杠批准", replacement: "/approve"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠批准"),
+        .match(ruleID: rules[1].id, replacement: "/approve"),
+        "longer rule matches"
     )
-    try expectEqual(result.output, "请执行/approve", "longest rule")
-    try expectEqual(result.matchCount, 1, "longest rule count")
+    try expectEqual(
+        engine.finalDecision("斜杠"),
+        .match(ruleID: rules[0].id, replacement: "/"),
+        "shorter rule matches"
+    )
+    try expectEqual(
+        engine.finalDecision("请执行斜杠批准"),
+        .reject,
+        "partial utterance rejected"
+    )
 }
 
 private func testReplacementIsNotRecursive() throws {
-    let result = MacroEngine().apply(
-        "斜杠批准",
-        rules: [
-            MacroRule(source: "斜杠批准", replacement: "斜杠"),
-            MacroRule(source: "斜杠", replacement: "/"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠批准", replacement: "斜杠"),
+        MacroRule(source: "斜杠", replacement: "/"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠批准"),
+        .match(ruleID: rules[0].id, replacement: "斜杠"),
+        "non-recursive replacement"
     )
-    try expectEqual(result.output, "斜杠", "non-recursive replacement")
-    try expectEqual(result.matchCount, 1, "non-recursive count")
 }
 
 private func testUnicodeAndMultipleMatches() throws {
-    let result = MacroEngine().apply(
-        "斜杠任务，然后斜杠",
-        rules: [
-            MacroRule(source: "斜杠任务", replacement: "/missions"),
-            MacroRule(source: "斜杠", replacement: "/"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠任务", replacement: "/missions"),
+        MacroRule(source: "斜杠", replacement: "/"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠任务"),
+        .match(ruleID: rules[0].id, replacement: "/missions"),
+        "unicode replacement"
     )
-    try expectEqual(result.output, "/missions，然后/", "unicode replacement")
-    try expectEqual(result.matchCount, 2, "multiple replacement count")
+    try expectEqual(
+        engine.finalDecision("斜杠任务，然后斜杠"),
+        .reject,
+        "multiple sentences rejected in whole-utterance mode"
+    )
 }
 
 private func testDisabledRulesAreIgnored() throws {
-    let result = MacroEngine().apply(
-        "斜杠",
-        rules: [
-            MacroRule(
-                source: "斜杠",
-                replacement: "/",
-                isEnabled: false
-            ),
-        ]
-    )
-    try expectEqual(result.output, "斜杠", "disabled rule")
-    try expectEqual(result.matchCount, 0, "disabled rule count")
+    let rules = [
+        MacroRule(
+            source: "斜杠",
+            replacement: "/",
+            isEnabled: false
+        ),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(engine.decide("斜杠"), .reject, "disabled rule in decide")
+    try expectEqual(engine.finalDecision("斜杠"), .reject, "disabled rule in finalDecision")
 }
 
 private func testNormalizedMatchWithPunctuation() throws {
-    let result = MacroEngine().apply(
-        "斜杠，批准",
-        rules: [
-            MacroRule(source: "斜杠批准", replacement: "/approve"),
-            MacroRule(source: "斜杠", replacement: "/"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠批准", replacement: "/approve"),
+        MacroRule(source: "斜杠", replacement: "/"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠，批准"),
+        .match(ruleID: rules[0].id, replacement: "/approve"),
+        "normalized match with comma"
     )
-    try expectEqual(result.output, "/approve", "normalized match with comma")
-    try expectEqual(result.matchCount, 1, "normalized match count")
 }
 
 private func testNormalizedMatchWithSpaces() throws {
-    let result = MacroEngine().apply(
-        "斜杠 批准",
-        rules: [
-            MacroRule(source: "斜杠批准", replacement: "/approve"),
-            MacroRule(source: "斜杠", replacement: "/"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠批准", replacement: "/approve"),
+        MacroRule(source: "斜杠", replacement: "/"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠 批准"),
+        .match(ruleID: rules[0].id, replacement: "/approve"),
+        "normalized match with space"
     )
-    try expectEqual(result.output, "/approve", "normalized match with space")
-    try expectEqual(result.matchCount, 1, "normalized match with space count")
 }
 
 private func testExactMatchStillPreferred() throws {
-    let result = MacroEngine().apply(
-        "斜杠批准",
-        rules: [
-            MacroRule(source: "斜杠批准", replacement: "/approve"),
-            MacroRule(source: "斜杠", replacement: "/"),
-        ]
+    let rules = [
+        MacroRule(source: "斜杠批准", replacement: "/approve"),
+        MacroRule(source: "斜杠", replacement: "/"),
+    ]
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(
+        engine.finalDecision("斜杠批准"),
+        .match(ruleID: rules[0].id, replacement: "/approve"),
+        "exact match preferred"
     )
-    try expectEqual(result.output, "/approve", "exact match preferred")
-    try expectEqual(result.matchCount, 1, "exact match count")
 }
 
 private func testRuleValidation() throws {
@@ -855,9 +874,8 @@ private func testSchemaElevenDisablesBareApproveRules() throws {
     let enabled = Dictionary(
         uniqueKeysWithValues: loaded.macroRules.map { ($0.id.uuidString.prefix(1), $0.isEnabled) }
     )
-    try expectEqual(loaded.macroRules.count, 4, "rules are kept, not deleted")
+    try expectEqual(loaded.macroRules.count, 3, "rules are kept, duplicates merged in schema 13")
     try expectEqual(enabled["1"], false, "approve → /approve disabled")
-    try expectEqual(enabled["2"], false, "Approve → /approve disabled")
     try expectEqual(enabled["3"], true, "user-customised approve rule untouched")
     try expectEqual(enabled["4"], true, "other rules untouched")
     try expectEqual(
@@ -871,9 +889,10 @@ private func testSchemaElevenDisablesBareApproveRules() throws {
 
 private func testMacroAliases() throws {
     let rules = [MacroRule(source: "斜杠 | 写杠|鞋杠", replacement: "/")]
-    try expectEqual(MacroEngine().apply("写杠", rules: rules).output, "/", "alias 1")
-    try expectEqual(MacroEngine().apply("输入鞋杠吧", rules: rules).output, "输入/吧", "alias 2")
-    try expectEqual(MacroEngine().apply("斜杠", rules: rules).output, "/", "primary source")
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(engine.finalDecision("写杠"), .match(ruleID: rules[0].id, replacement: "/"), "alias 1")
+    try expectEqual(engine.finalDecision("输入鞋杠吧"), .reject, "alias 2 not whole utterance")
+    try expectEqual(engine.finalDecision("斜杠"), .match(ruleID: rules[0].id, replacement: "/"), "primary source")
 }
 
 private func testWholeUtteranceDropsTrailingPunctuation() throws {
@@ -881,29 +900,21 @@ private func testWholeUtteranceDropsTrailingPunctuation() throws {
         MacroRule(source: "斜杠批准", replacement: "/approve"),
         MacroRule(source: "斜杠任务", replacement: "/missions"),
     ]
-    try expectEqual(MacroEngine().apply("斜杠批准。", rules: rules).output, "/approve", "trailing 。")
-    try expectEqual(MacroEngine().apply(" 斜杠批准！", rules: rules).output, "/approve", "leading space + ！")
-    try expectEqual(MacroEngine().apply("斜杠批准?", rules: rules).output, "/approve", "half-width ?")
-    try expectEqual(
-        MacroEngine().apply("斜杠任务，斜杠批准。", rules: rules).output,
-        "/missions/approve",
-        "multiple commands"
-    )
+    let engine = MacroEngine(rules: rules)
+    try expectEqual(engine.finalDecision("斜杠批准。"), .match(ruleID: rules[0].id, replacement: "/approve"), "trailing 。")
+    try expectEqual(engine.finalDecision(" 斜杠批准！"), .match(ruleID: rules[0].id, replacement: "/approve"), "leading space + ！")
+    try expectEqual(engine.finalDecision("斜杠批准?"), .match(ruleID: rules[0].id, replacement: "/approve"), "half-width ?")
+    try expectEqual(engine.finalDecision("斜杠任务，斜杠批准。"), .reject, "multiple commands not single utterance")
 }
 
 private func testPartialUtteranceKeepsPunctuation() throws {
-    let result = MacroEngine().apply(
-        "请输入斜杠批准。",
-        rules: [MacroRule(source: "斜杠批准", replacement: "/approve")]
-    )
-    try expectEqual(result.output, "请输入/approve。", "sentence punctuation preserved")
-    try expectEqual(result.matchCount, 1, "partial count")
+    let engine = MacroEngine(rules: [MacroRule(source: "斜杠批准", replacement: "/approve")])
+    try expectEqual(engine.finalDecision("请输入斜杠批准。"), .reject, "sentence with prefix text is rejected")
 }
 
 private func testEnglishWordsAreNotRewrittenByDefault() throws {
-    let result = MacroEngine().apply("I approve this.", rules: AppSettings.defaultMacroRules)
-    try expectEqual(result.output, "I approve this.", "default rules leave English alone")
-    try expectEqual(result.changed, false, "no default match")
+    let engine = MacroEngine(rules: AppSettings.defaultMacroRules)
+    try expectEqual(engine.finalDecision("I approve this."), .reject, "default rules leave English alone")
 }
 
 private func testValidationDetectsAliasDuplicates() throws {
@@ -920,6 +931,95 @@ private func testValidationDetectsAliasDuplicates() throws {
         "only separators is empty"
     )
     try expect(!issues.contains { $0.ruleID == first.id }, "first rule is valid")
+}
+
+private func testNormalizerFoldsCaseWidthAndPunctuation() throws {
+    try expectEqual(MacroNormalizer.normalize("Ｕｓａｇｅ。"), "usage", "width and trailing period")
+    try expectEqual(MacroNormalizer.normalize(" USAGE！"), "usage", "spaces and exclamation")
+    try expectEqual(MacroNormalizer.normalize("“usage”"), "usage", "quotes")
+    try expectEqual(MacroNormalizer.normalize("中文测试"), "中文测试", "chinese preserved")
+    try expectEqual(MacroNormalizer.normalize("foo\u{200B}bar"), "foobar", "zero width space removed")
+    try expectEqual(MacroNormalizer.normalize("c++"), "c++", "+ preserved")
+}
+
+private func testDecidePendingOnPrefix() throws {
+    let rule = MacroRule(source: "usage", replacement: "/usage")
+    let engine = MacroEngine(rules: [rule])
+    try expectEqual(engine.decide("us"), .pending, "prefix us")
+    try expectEqual(engine.decide("usa"), .pending, "prefix usa")
+    try expectEqual(engine.decide("usage。"), .match(ruleID: rule.id, replacement: "/usage"), "exact match")
+}
+
+private func testDecideRejectsNonPrefix() throws {
+    let rule = MacroRule(source: "usage", replacement: "/usage")
+    let engine = MacroEngine(rules: [rule])
+    try expectEqual(engine.decide("hello"), .reject, "non prefix")
+    try expectEqual(engine.decide("usages"), .reject, "longer than pattern")
+}
+
+private func testDecideEmptyAfterNormalizationIsPending() throws {
+    let rule = MacroRule(source: "usage", replacement: "/usage")
+    let engine = MacroEngine(rules: [rule])
+    try expectEqual(engine.decide("。"), .pending, "empty normalized is pending in decide")
+    try expectEqual(engine.finalDecision("。"), .reject, "empty normalized is rejected in finalDecision")
+}
+
+private func testDecideUsesAliases() throws {
+    let rule = MacroRule(source: "斜杠|写杠", replacement: "/")
+    let engine = MacroEngine(rules: [rule])
+    try expectEqual(engine.decide("斜杠"), .match(ruleID: rule.id, replacement: "/"), "alias 1")
+    try expectEqual(engine.decide("写杠"), .match(ruleID: rule.id, replacement: "/"), "alias 2")
+}
+
+private func testPrefixConflictIsWarningOnly() throws {
+    let r1 = MacroRule(source: "model", replacement: "/model")
+    let r2 = MacroRule(source: "models", replacement: "/models")
+    let issues = MacroEngine().validate([r1, r2])
+    try expect(issues.contains { $0.kind == .prefixConflict && $0.ruleID == r2.id }, "prefix conflict issue")
+    let engine = MacroEngine(rules: [r1, r2])
+    try expectEqual(engine.finalDecision("model"), .match(ruleID: r1.id, replacement: "/model"), "r1 matches")
+    try expectEqual(engine.finalDecision("models"), .match(ruleID: r2.id, replacement: "/models"), "r2 matches")
+}
+
+private func testSchemaThirteenMergesCaseDuplicates() throws {
+    let r1 = MacroRule(source: "Usage", replacement: "/usage", isEnabled: false)
+    let r2 = MacroRule(source: "usage", replacement: "/usage", isEnabled: true)
+    let r3 = MacroRule(source: "other", replacement: "/other", isEnabled: true)
+    let r4 = MacroRule(source: "Usage", replacement: "/different", isEnabled: true)
+    let merged = MacroRuleMigration.mergeNormalizedDuplicates([r1, r2, r3, r4])
+    try expectEqual(merged.count, 3, "r1 and r2 merged into 1")
+    try expectEqual(merged[0].id, r1.id, "first rule id kept")
+    try expectEqual(merged[0].source, "Usage", "first rule source kept")
+    try expectEqual(merged[0].isEnabled, true, "enabled when any duplicate enabled")
+    try expectEqual(merged[1].id, r3.id, "r3 order kept")
+    try expectEqual(merged[2].id, r4.id, "r4 kept due to different replacement")
+}
+
+private func testSchemaThirteenIdempotent() throws {
+    let settings = AppSettings(
+        schemaVersion: 13,
+        macroRules: [MacroRule(source: "test", replacement: "/test")]
+    )
+    let data = try JSONEncoder().encode(settings)
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+    try expectEqual(decoded.schemaVersion, 13, "schemaVersion remains 13")
+    try expectEqual(decoded.macroRules, settings.macroRules, "rules unchanged")
+}
+
+private func testSchemaUpgradeKeepsRemovedDefaultExcludes() throws {
+    var base = AppSettings(schemaVersion: 12)
+    base.excludedBundleIDs.removeAll { $0 == "com.apple.finder" }
+    let data = try JSONEncoder().encode(base)
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+    try expect(!decoded.excludedBundleIDs.contains("com.apple.finder"), "finder not re-added")
+}
+
+private func testSchemaUpgradeAddsNewlyIntroducedExclude() throws {
+    var base = AppSettings(schemaVersion: 6)
+    base.excludedBundleIDs = ["com.apple.finder"]
+    let data = try JSONEncoder().encode(base)
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+    try expect(decoded.excludedBundleIDs.contains("com.stablyai.orca"), "orca added on upgrade from schema 6")
 }
 
 // MARK: - Insertion diff
@@ -1052,6 +1152,36 @@ private func testTerminalTUIPaddingIsConsumed() throws {
     try expectEqual(insertion.text, "斜杠", "TUI box insertion")
 }
 
+private func testTerminalTUIPlaceholderIsConsumed() throws {
+    let insertion = try TerminalInsertionDiff.compute(
+        original: "│ > Try \"fix it\"   │\n╰────────────╯\n  ? for shortcuts",
+        current: "│ > 斜杠批准         │\n╰────────────╯\n  ? for shortcuts",
+        caretUTF16: nil
+    )
+    try expectEqual(insertion.text, "斜杠批准", "TUI box placeholder insertion")
+}
+
+private func testTerminalAgyPlaceholderIsConsumed() throws {
+    let original = """
+    ────────────────────────────────────────
+    > Accept-edits mode: file edits auto-approved (shift+tab to cycle)
+    ────────────────────────────────────────
+    ? for shortcuts
+    """
+    let current = """
+    ────────────────────────────────────────
+    > usage
+    ────────────────────────────────────────
+    ? for shortcuts
+    """
+    let insertion = try TerminalInsertionDiff.compute(
+        original: original,
+        current: current,
+        caretUTF16: nil
+    )
+    try expectEqual(insertion.text, "usage", "agy placeholder replacement")
+}
+
 private func testTerminalRejectsOtherChanges() throws {
     try expectEqual(
         terminalFailure(original: "$ ls\n", current: "$ ls\nfile.txt\n$ 斜杠"),
@@ -1062,11 +1192,6 @@ private func testTerminalRejectsOtherChanges() throws {
         terminalFailure(original: "$ ", current: "$ 斜杠\n"),
         .notUnique,
         "newline in insertion rejected"
-    )
-    try expectEqual(
-        terminalFailure(original: "│ > Try \"fix it\"   │", current: "│ > 斜杠批准         │"),
-        .notUnique,
-        "placeholder replacement rejected"
     )
     try expectEqual(
         terminalFailure(original: "10:01 $ ", current: "10:02 $ 斜杠"),
@@ -1134,7 +1259,7 @@ private func testTerminalMacroSettings() throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try Data(#"{ "schemaVersion": 11, "macroRules": [] }"#.utf8).write(to: fileURL)
     let loaded = SettingsRepository(fileURL: fileURL).load()
-    try expectEqual(loaded.schemaVersion, 12, "schema 12")
+    try expectEqual(loaded.schemaVersion, AppSettings.currentSchemaVersion, "schema upgraded to current")
     try expectEqual(
         loaded.terminalMacroBundleIDs,
         AppSettings.defaultTerminalMacroBundleIDs,
@@ -1299,6 +1424,215 @@ private func testLogiOptionsPatchJson() throws {
     try expectEqual(c86Usage?["hidUsage"] as? Int, 5, "c86 hidUsage 5")
 }
 
+private func testWriteVerificationAcceptsTrailingPunctuation() throws {
+    let prefix = "echo "
+    let replacement = "/usage"
+    let suffix = "\n"
+    let actual = prefix + replacement + "。" + suffix
+    try expect(
+        WriteVerification.isApplied(actual: actual, prefix: prefix, replacement: replacement, suffix: suffix),
+        "accepts trailing period"
+    )
+    let actualMultiple = prefix + replacement + "。！  " + suffix
+    try expect(
+        WriteVerification.isApplied(actual: actualMultiple, prefix: prefix, replacement: replacement, suffix: suffix),
+        "accepts multiple trailing punctuation and spaces"
+    )
+}
+
+private func testWriteVerificationRejectsOtherChanges() throws {
+    let prefix = "echo "
+    let replacement = "/usage"
+    let suffix = "\n"
+    let withText = prefix + replacement + " extra" + suffix
+    try expect(
+        !WriteVerification.isApplied(actual: withText, prefix: prefix, replacement: replacement, suffix: suffix),
+        "rejects extra letters"
+    )
+    let wrongPrefix = "echo2 " + replacement + suffix
+    try expect(
+        !WriteVerification.isApplied(actual: wrongPrefix, prefix: prefix, replacement: replacement, suffix: suffix),
+        "rejects prefix mismatch"
+    )
+    let wrongSuffix = prefix + replacement + "\r\n"
+    try expect(
+        !WriteVerification.isApplied(actual: wrongSuffix, prefix: prefix, replacement: replacement, suffix: suffix),
+        "rejects suffix mismatch"
+    )
+    let wrongReplacement = prefix + "/different" + suffix
+    try expect(
+        !WriteVerification.isApplied(actual: wrongReplacement, prefix: prefix, replacement: replacement, suffix: suffix),
+        "rejects replacement mismatch"
+    )
+}
+
+private func testWriteVerificationExactStillPasses() throws {
+    let prefix = "Hello "
+    let replacement = "World"
+    let suffix = "!"
+    let actual = prefix + replacement + suffix
+    try expect(
+        WriteVerification.isApplied(actual: actual, prefix: prefix, replacement: replacement, suffix: suffix),
+        "exact match passes"
+    )
+}
+
+private func testRecentDictationsKeepsLatestFive() throws {
+    var dictations = RecentDictations()
+    for i in 1...7 {
+        dictations.append(text: "word\(i)", bundleID: "com.test.app", matched: i % 2 == 0)
+    }
+    try expectEqual(dictations.items.count, 5, "ring buffer keeps at most 5")
+    try expectEqual(dictations.items[0].text, "word7", "first item is latest")
+    try expectEqual(dictations.items[4].text, "word3", "oldest remaining is word3")
+}
+
+private func testRecentDictationsSkipsLongText() throws {
+    var dictations = RecentDictations()
+    let text20 = String(repeating: "a", count: 20)
+    dictations.append(text: text20, bundleID: "com.test.app", matched: true)
+    try expectEqual(dictations.items.count, 1, "20 chars accepted")
+
+    let text21 = String(repeating: "b", count: 21)
+    dictations.append(text: text21, bundleID: "com.test.app", matched: false)
+    try expectEqual(dictations.items.count, 1, "21 chars rejected")
+
+    dictations.append(text: "   ", bundleID: "com.test.app", matched: false)
+    try expectEqual(dictations.items.count, 1, "whitespace-only rejected")
+}
+
+private func testSessionRecordStoreAppendsJSONLines() throws {
+    let tempURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("test_sessions_\(UUID().uuidString).jsonl")
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    let store = SessionRecordStore(fileURL: tempURL)
+    let record1 = SessionRecord(
+        id: "a1b2c3d4",
+        startedAt: "2026-09-24T10:00:00Z",
+        app: "com.apple.Terminal",
+        mode: "terminal",
+        role: "toggle",
+        listenedMs: 800,
+        anchor: "captured",
+        outcome: "replaced",
+        decision: "early",
+        doneMs: 250
+    )
+    let record2 = SessionRecord(
+        id: "e5f6a7b8",
+        startedAt: "2026-09-24T10:01:00Z",
+        app: "com.apple.TextEdit",
+        mode: "standard",
+        role: "hold",
+        listenedMs: 1200,
+        anchor: "captured",
+        outcome: "noMatch",
+        decision: "settled",
+        doneMs: 600
+    )
+
+    store.appendSync(record1)
+    store.appendSync(record2)
+
+    let content = try String(contentsOf: tempURL, encoding: .utf8)
+    let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+    try expectEqual(lines.count, 2, "two records appended")
+
+    let decoded1 = try JSONDecoder().decode(SessionRecord.self, from: Data(lines[0].utf8))
+    try expectEqual(decoded1.id, "a1b2c3d4", "record 1 id")
+    try expectEqual(decoded1.outcome, "replaced", "record 1 outcome")
+
+    let decoded2 = try JSONDecoder().decode(SessionRecord.self, from: Data(lines[1].utf8))
+    try expectEqual(decoded2.id, "e5f6a7b8", "record 2 id")
+}
+
+private func testSessionRecordStorePrunesOlderThan30Days() throws {
+    let tempURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("test_prune_\(UUID().uuidString).jsonl")
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    let store = SessionRecordStore(fileURL: tempURL)
+    let oldDateStr = "2026-08-01T10:00:00Z"
+    let newDateStr = "2026-09-24T10:00:00Z"
+
+    let oldRecord = SessionRecord(
+        id: "old1",
+        startedAt: oldDateStr,
+        app: "com.apple.Terminal",
+        mode: "terminal",
+        role: "toggle",
+        listenedMs: 500,
+        anchor: "captured",
+        outcome: "replaced",
+        decision: "early"
+    )
+    let newRecord = SessionRecord(
+        id: "new1",
+        startedAt: newDateStr,
+        app: "com.apple.Terminal",
+        mode: "terminal",
+        role: "toggle",
+        listenedMs: 500,
+        anchor: "captured",
+        outcome: "replaced",
+        decision: "early"
+    )
+
+    store.appendSync(oldRecord)
+    store.appendSync(newRecord)
+
+    let nowFormatter = ISO8601DateFormatter()
+    let now = nowFormatter.date(from: "2026-09-24T12:00:00Z") ?? Date()
+    store.pruneSync(days: 30, now: now)
+
+    let content = try String(contentsOf: tempURL, encoding: .utf8)
+    let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+    try expectEqual(lines.count, 1, "only 1 record left after prune")
+
+    let remaining = try JSONDecoder().decode(SessionRecord.self, from: Data(lines[0].utf8))
+    try expectEqual(remaining.id, "new1", "new record kept")
+}
+
+private func testSessionRecordHasNoTextFields() throws {
+    let record = SessionRecord(
+        id: "test1234",
+        startedAt: "2026-09-24T10:00:00Z",
+        app: "com.apple.Terminal",
+        mode: "terminal",
+        role: "toggle",
+        listenedMs: 100,
+        anchor: "captured",
+        outcome: "replaced",
+        decision: "early",
+        failure: "none",
+        method: "accessibility",
+        firstChangeMs: 50,
+        decisionMs: 80,
+        doneMs: 120,
+        enter: "sent",
+        enterWaitMs: 30
+    )
+    let data = try JSONEncoder().encode(record)
+    let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let keys: Set<String> = json != nil ? Set(json!.keys) : []
+
+    let allowedKeys: Set<String> = [
+        "id", "startedAt", "app", "mode", "role", "listenedMs",
+        "anchor", "outcome", "decision", "failure", "method",
+        "firstChangeMs", "decisionMs", "doneMs", "enter", "enterWaitMs"
+    ]
+
+    try expect(keys.isSubset(of: allowedKeys), "no extraneous fields: \(keys.subtracting(allowedKeys))")
+
+    let forbiddenKeywords = ["text", "insert", "input", "output", "replacement", "content", "rule", "value", "raw"]
+    for key in keys {
+        for forbidden in forbiddenKeywords {
+            try expect(!key.lowercased().contains(forbidden), "key \(key) must not contain \(forbidden)")
+        }
+    }
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("longest rule wins", testLongestRuleWins),
     ("non-recursive replacement", testReplacementIsNotRecursive),
@@ -1335,6 +1669,24 @@ let tests: [(String, () throws -> Void)] = [
     ("partial utterance keeps punctuation", testPartialUtteranceKeepsPunctuation),
     ("default rules leave English alone", testEnglishWordsAreNotRewrittenByDefault),
     ("validation detects alias duplicates", testValidationDetectsAliasDuplicates),
+    ("normalizer folds case width punctuation", testNormalizerFoldsCaseWidthAndPunctuation),
+    ("decide pending on prefix", testDecidePendingOnPrefix),
+    ("decide rejects non prefix", testDecideRejectsNonPrefix),
+    ("decide empty after normalization is pending", testDecideEmptyAfterNormalizationIsPending),
+    ("decide uses aliases", testDecideUsesAliases),
+    ("prefix conflict is warning only", testPrefixConflictIsWarningOnly),
+    ("schema thirteen merges case duplicates", testSchemaThirteenMergesCaseDuplicates),
+    ("schema thirteen idempotent", testSchemaThirteenIdempotent),
+    ("schema upgrade keeps removed default excludes", testSchemaUpgradeKeepsRemovedDefaultExcludes),
+    ("schema upgrade adds newly introduced exclude", testSchemaUpgradeAddsNewlyIntroducedExclude),
+    ("write verification accepts trailing punctuation", testWriteVerificationAcceptsTrailingPunctuation),
+    ("write verification rejects other changes", testWriteVerificationRejectsOtherChanges),
+    ("write verification exact still passes", testWriteVerificationExactStillPasses),
+    ("recent dictations keeps latest five", testRecentDictationsKeepsLatestFive),
+    ("recent dictations skips long text", testRecentDictationsSkipsLongText),
+    ("session record store appends JSON lines", testSessionRecordStoreAppendsJSONLines),
+    ("session record store prunes older than 30 days", testSessionRecordStorePrunesOlderThan30Days),
+    ("session record has no text fields", testSessionRecordHasNoTextFields),
     ("insertion diff exact middle", testInsertionDiffExactMiddle),
     ("insertion diff replaces selection", testInsertionDiffReplacesSelection),
     ("insertion diff uses UTF-16 offsets", testInsertionDiffUsesUTF16Offsets),
@@ -1343,6 +1695,8 @@ let tests: [(String, () throws -> Void)] = [
     ("keystroke chunks respect limit", testKeystrokeChunksRespectLimit),
     ("terminal shell prompt", testTerminalShellPrompt),
     ("terminal TUI padding is consumed", testTerminalTUIPaddingIsConsumed),
+    ("terminal TUI placeholder is consumed", testTerminalTUIPlaceholderIsConsumed),
+    ("terminal agy placeholder is consumed", testTerminalAgyPlaceholderIsConsumed),
     ("terminal rejects other changes", testTerminalRejectsOtherChanges),
     ("terminal caret decides trailing space", testTerminalCaretDecidesTrailingSpace),
     ("terminal UTF-16 location", testTerminalUTF16Location),

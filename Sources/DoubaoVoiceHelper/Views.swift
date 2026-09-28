@@ -142,63 +142,22 @@ struct SettingsView: View {
             }
 
             Section("语音宏（特殊文字替换）") {
-                Text("听写结束时，将识别到的特定文字替换为目标符号或命令。长词优先；匹配时忽略标点和空格。用 | 分隔多个说法（如 斜杠|写杠）以兼容同音误识别。整句都是命令时，结尾标点会一并去掉。")
+                Text("整句等于触发词时才替换；比较时忽略标点、空格、大小写和全角半角。需要接后文时请分两次说。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                    Text("微信不提供输入框内容，语音宏在微信中不可用。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+
                 ForEach(model.settings.macroRules) { rule in
-                    MacroRuleIssueLabel(kind: model.macroValidationIssues[rule.id])
-                    HStack(spacing: 8) {
-                        Toggle(
-                            "",
-                            isOn: Binding(
-                                get: {
-                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.isEnabled ?? false
-                                },
-                                set: { enabled in
-                                    model.updateMacroRule(id: rule.id) { $0.isEnabled = enabled }
-                                }
-                            )
-                        )
-                        .labelsHidden()
-
-                        TextField(
-                            "识别词 (如 斜杠批准)",
-                            text: Binding(
-                                get: {
-                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.source ?? ""
-                                },
-                                set: { source in
-                                    model.updateMacroRule(id: rule.id) { $0.source = source }
-                                }
-                            )
-                        )
-                        .frame(minWidth: 120)
-
-                        Image(systemName: "arrow.right")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-
-                        TextField(
-                            "替换为 (如 /approve)",
-                            text: Binding(
-                                get: {
-                                    model.settings.macroRules.first(where: { $0.id == rule.id })?.replacement ?? ""
-                                },
-                                set: { replacement in
-                                    model.updateMacroRule(id: rule.id) { $0.replacement = replacement }
-                                }
-                            )
-                        )
-                        .frame(minWidth: 120)
-
-                        Button(role: .destructive) {
-                            model.removeMacroRule(id: rule.id)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+                    MacroRuleRow(rule: rule)
+                        .environmentObject(model)
                 }
 
                 Button {
@@ -228,6 +187,9 @@ struct SettingsView: View {
                 AppBundleList(list: .terminalMacro, removeHelp: "从终端名单中移除")
                     .environmentObject(model)
             }
+
+            RecentDictationsSection()
+                .environmentObject(model)
 
             Section("浏览器与导航排除") {
                 Text("在此名单中的应用（如浏览器）内，鼠标侧键（前进/后退）将保留原生页面前进/后退功能，不触发切换式语音或回车。按住式语音不受此名单影响。")
@@ -920,17 +882,108 @@ private struct AppBundleList: View {
     }
 }
 
+private struct MacroRuleRow: View {
+    @EnvironmentObject private var model: AppModel
+    let rule: MacroRule
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            MacroRuleIssueLabel(kind: model.macroValidationIssues[rule.id])
+            HStack(spacing: 8) {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: {
+                            model.settings.macroRules.first(where: { $0.id == rule.id })?.isEnabled ?? false
+                        },
+                        set: { enabled in
+                            model.updateMacroRule(id: rule.id) { $0.isEnabled = enabled }
+                        }
+                    )
+                )
+                .labelsHidden()
+
+                TextField(
+                    "识别词 (如 斜杠批准)",
+                    text: Binding(
+                        get: {
+                            model.settings.macroRules.first(where: { $0.id == rule.id })?.source ?? ""
+                        },
+                        set: { source in
+                            model.updateMacroRule(id: rule.id) { $0.source = source }
+                        }
+                    )
+                )
+                .frame(minWidth: 120)
+
+                Image(systemName: "arrow.right")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+
+                HStack(spacing: 4) {
+                    TextField(
+                        "替换为 (如 /approve)",
+                        text: Binding(
+                            get: {
+                                model.settings.macroRules.first(where: { $0.id == rule.id })?.replacement ?? ""
+                            },
+                            set: { replacement in
+                                model.updateMacroRule(id: rule.id) { $0.replacement = replacement }
+                            }
+                        )
+                    )
+                    .frame(minWidth: 120)
+
+                    spaceBadge(for: rule.replacement)
+                }
+
+                Button(role: .destructive) {
+                    model.removeMacroRule(id: rule.id)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func spaceBadge(for text: String) -> some View {
+        if text.hasPrefix(" ") || text.hasSuffix(" ") {
+            let leading = text.prefix(while: { $0 == " " }).count
+            let trailing = text.reversed().prefix(while: { $0 == " " }).count
+            let tips = [
+                leading > 0 ? "开头有 \(leading) 个空格" : nil,
+                trailing > 0 ? "末尾有 \(trailing) 个空格" : nil
+            ].compactMap { $0 }.joined(separator: "，")
+
+            Text("␣")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.blue)
+                .help(tips)
+        }
+    }
+}
+
 private struct MacroRuleIssueLabel: View {
     let kind: MacroValidationIssue.Kind?
 
     var body: some View {
         if let kind {
-            Label(
-                kind == .emptySource ? "识别词为空，此规则不会生效" : "识别词与上方规则重复，只有先出现的规则生效",
-                systemImage: "exclamationmark.triangle.fill"
-            )
-            .font(.caption)
-            .foregroundStyle(.orange)
+            switch kind {
+            case .emptySource:
+                Label("识别词为空，此规则不会生效", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .duplicateSource:
+                Label("识别词与上方规则重复，只有先出现的规则生效", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .prefixConflict:
+                Label("触发词互为开头，可能在输入完成前提前替换", systemImage: "info.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -943,17 +996,28 @@ private struct MacroPreviewRow: View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("输入一段听写文本试试效果", text: $sample)
                 .textFieldStyle(.roundedBorder)
-            let result = model.preview(sample)
+            let decision = model.preview(sample)
             HStack(spacing: 6) {
                 Image(systemName: "arrow.turn.down.right")
                     .foregroundStyle(.secondary)
-                Text(result.output.isEmpty ? " " : result.output)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                Spacer()
-                Text(result.changed ? "命中 \(result.matchCount) 条" : "无命中")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                switch decision {
+                case let .match(_, replacement):
+                    Text("会替换为：\(replacement.isEmpty ? " " : replacement)")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                    Spacer()
+                    Text("命中")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .pending, .reject:
+                    Text("不会替换")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("无命中")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.top, 4)
@@ -997,3 +1061,86 @@ private struct ExcludedAppRow: View {
         .padding(.vertical, 3)
     }
 }
+
+private struct RecentDictationsSection: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Section("最近识别") {
+            Text("显示最近 5 次简短听写的识别结果（仅保留在内存中）。如果豆包识别结果有偏差，可一键添加为别名。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if model.recentDictations.items.isEmpty {
+                Text("最近没有较短的识别结果。")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(model.recentDictations.items) { item in
+                    HStack(spacing: 8) {
+                        Image(systemName: item.matched ? "checkmark.circle.fill" : "waveform")
+                            .foregroundStyle(item.matched ? .green : .secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.text)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                            HStack(spacing: 6) {
+                                Text(displayName(for: item.bundleID))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text("•")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Text(timeString(from: item.timestamp))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer()
+
+                        Menu {
+                            if !model.settings.macroRules.isEmpty {
+                                ForEach(model.settings.macroRules) { rule in
+                                    Button {
+                                        model.addAlias(item.text, to: rule.id)
+                                    } label: {
+                                        Text("添加为「\(rule.source.isEmpty ? "（空）" : rule.source)」的别名")
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button {
+                                model.createRule(fromTrigger: item.text)
+                            } label: {
+                                Label("新建规则", systemImage: "plus")
+                            }
+                        } label: {
+                            Text("添加为别名…")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private func displayName(for bundleID: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return (try? url.resourceValues(forKeys: [.localizedNameKey]))?.localizedName ?? url.deletingPathExtension().lastPathComponent
+        }
+        return bundleID
+    }
+
+    private func timeString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+}
+

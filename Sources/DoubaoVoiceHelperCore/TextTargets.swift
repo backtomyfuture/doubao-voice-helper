@@ -47,13 +47,37 @@ public struct SettleTiming: Equatable, Sendable {
     public let firstChange: TimeInterval?
     /// Seconds from the start of waiting until the value was considered final.
     public let settled: TimeInterval
+    /// Seconds from the start of waiting until a decision was made.
+    public let decided: TimeInterval
     /// Value-change notifications delivered by the target app.
     public let notifications: Int
 
-    public init(firstChange: TimeInterval?, settled: TimeInterval, notifications: Int) {
+    public init(
+        firstChange: TimeInterval?,
+        settled: TimeInterval,
+        decided: TimeInterval = 0,
+        notifications: Int
+    ) {
         self.firstChange = firstChange
         self.settled = settled
+        self.decided = decided
         self.notifications = notifications
+    }
+}
+
+public enum InsertionVerdict: Sendable {
+    case keepWaiting
+    case stop
+    case accept
+}
+
+public struct WatchedInsertion: @unchecked Sendable {
+    public let insertion: InsertedText   // 做出结论时的新增文字
+    public let settled: Bool             // true：文字已稳定才得出结论
+
+    public init(insertion: InsertedText, settled: Bool) {
+        self.insertion = insertion
+        self.settled = settled
     }
 }
 
@@ -100,6 +124,12 @@ public protocol TextTargetAdapter {
         targetProcessIdentifier: pid_t?,
         messagingTimeout: Float
     ) throws -> TextSessionAnchor
+    func watchInsertedText(
+        after anchor: TextSessionAnchor,
+        timeout: TimeInterval,
+        mode: TextTargetMode,
+        judge: (String) -> InsertionVerdict
+    ) throws -> WatchedInsertion?
     func waitForInsertedText(
         after anchor: TextSessionAnchor,
         timeout: TimeInterval,
@@ -117,6 +147,7 @@ public enum TextTargetError: Error, Equatable {
     case inaccessibleValue
     case inaccessibleSelection
     case focusChanged
+    case textChangedBeforeWrite
     case noInsertion
     case insertionNotUnique
     case notSettled
@@ -125,6 +156,26 @@ public enum TextTargetError: Error, Equatable {
     case keystrokeFallbackDisabled
     case keystrokeFallbackUnsafe
     case verificationFailed
+    case unknown
+
+    public var name: String {
+        switch self {
+        case .noFocusedElement: return "noFocusedElement"
+        case .inaccessibleValue: return "inaccessibleValue"
+        case .inaccessibleSelection: return "inaccessibleSelection"
+        case .focusChanged: return "focusChanged"
+        case .textChangedBeforeWrite: return "textChangedBeforeWrite"
+        case .noInsertion: return "noInsertion"
+        case .insertionNotUnique: return "insertionNotUnique"
+        case .notSettled: return "notSettled"
+        case .settleTimeout: return "settleTimeout"
+        case .writeFailed: return "writeFailed"
+        case .keystrokeFallbackDisabled: return "keystrokeFallbackDisabled"
+        case .keystrokeFallbackUnsafe: return "keystrokeFallbackUnsafe"
+        case .verificationFailed: return "verificationFailed"
+        case .unknown: return "unknown"
+        }
+    }
 }
 
 public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
@@ -164,6 +215,99 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
 
     // MARK: - Settle detection
 
+    public func watchInsertedText(
+        after anchor: TextSessionAnchor,
+        timeout: TimeInterval,
+        mode: TextTargetMode,
+        judge: (String) -> InsertionVerdict
+    ) throws -> WatchedInsertion? {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = startedAt + max(timeout, 0)
+        let observation = ValueChangeObservation(
+            element: anchor.element,
+            processIdentifier: anchor.identity.processIdentifier
+        )
+        defer { observation?.invalidate() }
+
+        var lastText = anchor.originalText
+        var lastChangeAt: TimeInterval?
+        var firstChangeAt: TimeInterval?
+
+        while true {
+            let now = ProcessInfo.processInfo.systemUptime
+            try verifyFocus(anchor)
+            let current = try snapshot(for: anchor.element)
+            guard current.identity == anchor.identity else {
+                throw TextTargetError.focusChanged
+            }
+
+            if current.text != lastText {
+                lastChangeAt = now
+                if firstChangeAt == nil { firstChangeAt = now }
+                lastText = current.text
+            }
+
+            let changed = current.text != anchor.originalText
+            if changed {
+                let provisionalTiming = SettleTiming(
+                    firstChange: firstChangeAt.map { $0 - startedAt },
+                    settled: now - startedAt,
+                    decided: now - startedAt,
+                    notifications: observation?.notificationCount ?? 0
+                )
+                if let provisional = try? makeInsertion(
+                    anchor: anchor,
+                    current: current,
+                    timing: provisionalTiming,
+                    mode: mode
+                ) {
+                    let verdict = judge(provisional.text)
+                    switch verdict {
+                    case .accept:
+                        return WatchedInsertion(insertion: provisional, settled: false)
+                    case .stop:
+                        return nil
+                    case .keepWaiting:
+                        break
+                    }
+                }
+            }
+
+            if changed, let lastChangeAt, now - lastChangeAt >= quietPeriod {
+                let timing = SettleTiming(
+                    firstChange: firstChangeAt.map { $0 - startedAt },
+                    settled: now - startedAt,
+                    decided: now - startedAt,
+                    notifications: observation?.notificationCount ?? 0
+                )
+                let insertion = try makeInsertion(
+                    anchor: anchor,
+                    current: current,
+                    timing: timing,
+                    mode: mode
+                )
+                let verdict = judge(insertion.text)
+                switch verdict {
+                case .accept:
+                    return WatchedInsertion(insertion: insertion, settled: true)
+                case .stop, .keepWaiting:
+                    return nil
+                }
+            }
+
+            guard now < deadline else {
+                throw changed ? TextTargetError.notSettled : TextTargetError.settleTimeout
+            }
+
+            let interval = min(changed ? pollInterval : detectInterval, deadline - now)
+            if let observation {
+                observation.wait(upTo: interval)
+            } else {
+                Thread.sleep(forTimeInterval: interval)
+            }
+        }
+    }
+
     public func waitForInsertedText(
         after anchor: TextSessionAnchor,
         timeout: TimeInterval,
@@ -200,6 +344,7 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
                 let timing = SettleTiming(
                     firstChange: firstChangeAt.map { $0 - startedAt },
                     settled: now - startedAt,
+                    decided: now - startedAt,
                     notifications: observation?.notificationCount ?? 0
                 )
                 return try makeInsertion(
@@ -221,6 +366,67 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
                 Thread.sleep(forTimeInterval: interval)
             }
         }
+    }
+
+    public func observeFinalText(
+        after anchor: TextSessionAnchor,
+        maxWait: TimeInterval = 1.0,
+        mode: TextTargetMode
+    ) -> String? {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = startedAt + maxWait
+        var lastText = anchor.originalText
+        var lastChangeAt: TimeInterval?
+
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            guard (try? verifyFocus(anchor)) != nil,
+                  let current = try? snapshot(for: anchor.element),
+                  current.identity == anchor.identity else {
+                return nil
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            if current.text != lastText {
+                lastChangeAt = now
+                lastText = current.text
+            }
+            let changed = current.text != anchor.originalText
+            if changed, let lastChangeAt, now - lastChangeAt >= quietPeriod {
+                let timing = SettleTiming(
+                    firstChange: nil,
+                    settled: now - startedAt,
+                    decided: now - startedAt,
+                    notifications: 0
+                )
+                if let insertion = try? makeInsertion(
+                    anchor: anchor,
+                    current: current,
+                    timing: timing,
+                    mode: mode
+                ) {
+                    return insertion.text
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if let current = try? snapshot(for: anchor.element),
+           current.identity == anchor.identity,
+           current.text != anchor.originalText {
+            let timing = SettleTiming(
+                firstChange: nil,
+                settled: ProcessInfo.processInfo.systemUptime - startedAt,
+                decided: ProcessInfo.processInfo.systemUptime - startedAt,
+                notifications: 0
+            )
+            return (try? makeInsertion(
+                anchor: anchor,
+                current: current,
+                timing: timing,
+                mode: mode
+            ))?.text
+        }
+
+        return nil
     }
 
     private func makeInsertion(
@@ -279,10 +485,11 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
         let element = insertion.anchor.element
         try verifyFocus(insertion.anchor)
         let current = try snapshot(for: element)
-        guard current.identity == insertion.anchor.identity,
-              current.text == insertion.currentText
-        else {
+        guard current.identity == insertion.anchor.identity else {
             throw TextTargetError.focusChanged
+        }
+        guard current.text == insertion.currentText else {
+            throw TextTargetError.textChangedBeforeWrite
         }
 
         if insertion.kind == .terminalLine {
@@ -290,6 +497,8 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
             return .keystrokes
         }
 
+        let prefix = (insertion.currentText as NSString).substring(to: insertion.range.location)
+        let suffix = (insertion.currentText as NSString).substring(from: insertion.range.location + insertion.range.length)
         let expected = (current.text as NSString).replacingCharacters(
             in: insertion.range,
             with: text
@@ -341,6 +550,9 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
             element: element,
             expected: expected,
             original: insertion.currentText,
+            prefix: prefix,
+            replacement: text,
+            suffix: suffix,
             window: writeVerificationWindow
         ) {
         case .applied:
@@ -363,6 +575,9 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
             element: element,
             expected: expected,
             original: insertion.currentText,
+            prefix: prefix,
+            replacement: text,
+            suffix: suffix,
             window: writeVerificationWindow + 0.1
         ) {
         case .applied:
@@ -376,13 +591,23 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
         element: AXUIElement,
         expected: String,
         original: String,
+        prefix: String,
+        replacement: String,
+        suffix: String,
         window: TimeInterval
     ) -> WriteOutcome {
         let deadline = ProcessInfo.processInfo.systemUptime + window
         var last: String?
         repeat {
             if let value = try? snapshot(for: element).text {
-                if value == expected { return .applied }
+                if WriteVerification.isApplied(
+                    actual: value,
+                    prefix: prefix,
+                    replacement: replacement,
+                    suffix: suffix
+                ) {
+                    return .applied
+                }
                 last = value
             }
             Thread.sleep(forTimeInterval: 0.02)
@@ -401,6 +626,13 @@ public final class AXTextAdapter: TextTargetAdapter, @unchecked Sendable {
         with text: String,
         element: AXUIElement
     ) throws {
+        let bundleID = insertion.anchor.identity.bundleIdentifier
+        if AppSettings.unverifiedTypingTerminalBundleIDs.contains(bundleID) {
+            KeystrokeTyper.run(
+                KeystrokeTyper.Plan(deleteCount: insertion.text.count, text: text)
+            )
+            return
+        }
         guard insertion.text.unicodeScalars.count == insertion.text.count else {
             throw TextTargetError.keystrokeFallbackUnsafe
         }

@@ -207,7 +207,7 @@ public struct AppVersion: Comparable, Equatable, CustomStringConvertible, Sendab
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 12
+    public static let currentSchemaVersion = 13
     public static let bundleIdentifier = "com.jarod.doubao-voice-helper"
     public static let gitHubRepository = "backtomyfuture/doubao-voice-helper"
     public static let gitHubReleasesAPIURL = URL(string: "https://api.github.com/repos/backtomyfuture/doubao-voice-helper/releases/latest")!
@@ -362,7 +362,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
             for bundleIdentifier in AppSettings.defaultNavigationExcludedBundleIDs
                 where !decodedExcludedBundleIDs.contains(bundleIdentifier)
             {
-                decodedExcludedBundleIDs.append(bundleIdentifier)
+                let introducedIn = AppSettings.navigationExcludedDefaultsIntroducedIn[bundleIdentifier] ?? 1
+                if introducedIn > decodedSchemaVersion {
+                    decodedExcludedBundleIDs.append(bundleIdentifier)
+                }
             }
         }
         if decodedSchemaVersion < 8 {
@@ -402,6 +405,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
             {
                 decodedMacroRules[index].isEnabled = false
             }
+        }
+        if decodedSchemaVersion < 13 {
+            decodedMacroRules = MacroRuleMigration.mergeNormalizedDuplicates(decodedMacroRules)
         }
         macroRules = decodedMacroRules
         if decodedSchemaVersion < 10 {
@@ -521,6 +527,28 @@ public struct AppSettings: Codable, Equatable, Sendable {
         AppSettings.bundleIdentifier,
     ]
 
+    public static let navigationExcludedDefaultsIntroducedIn: [String: Int] = [
+        "com.apple.finder": 1,
+        "com.apple.Safari": 1,
+        "com.apple.Preview": 1,
+        "com.google.Chrome": 1,
+        "com.microsoft.edgemac": 1,
+        "org.mozilla.firefox": 1,
+        "company.thebrowser.Browser": 1,
+        "com.stablyai.orca": 7,
+        "com.citrolabs.ego": 7,
+        "com.citrolabs.ego.lite": 7,
+        "com.brave.Browser": 7,
+        "com.operasoftware.Opera": 7,
+        "com.vivaldi.Vivaldi": 7,
+        AppSettings.bundleIdentifier: 1,
+    ]
+
+    public static let unverifiedTypingTerminalBundleIDs: Set<String> = [
+        "com.mitchellh.ghostty",
+        "com.stablyai.orca",
+    ]
+
     public static let defaultHoldExcludedBundleIDs = [
         AppSettings.bundleIdentifier,
     ]
@@ -589,3 +617,36 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case onboardingCompleted
     }
 }
+
+public enum MacroRuleMigration {
+    /// 归一化后触发词集合相同且目标文本相同的规则合并为一条：
+    /// 保留第一条的 id、触发词写法和位置；任一条启用则启用。
+    public static func mergeNormalizedDuplicates(_ rules: [MacroRule]) -> [MacroRule] {
+        var merged: [MacroRule] = []
+        var signatureToIndex: [String: Int] = [:]
+
+        for rule in rules {
+            let normalizedAliases = Set(
+                MacroEngine.aliases(of: rule.source)
+                    .map { MacroNormalizer.normalize($0) }
+                    .filter { !$0.isEmpty }
+            )
+            guard !normalizedAliases.isEmpty else {
+                merged.append(rule)
+                continue
+            }
+            let signature = normalizedAliases.sorted().joined(separator: "|") + "\0" + rule.replacement
+            if let existingIndex = signatureToIndex[signature] {
+                if rule.isEnabled {
+                    merged[existingIndex].isEnabled = true
+                }
+            } else {
+                signatureToIndex[signature] = merged.count
+                merged.append(rule)
+            }
+        }
+
+        return merged
+    }
+}
+
